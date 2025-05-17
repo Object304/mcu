@@ -1,8 +1,8 @@
 //1 - sync
 //2 - weight (0x00 - small, 0x01 - big)
 //3 - cmd
-//4 - time1
-//5 - time2
+//4 - time1 (min)
+//5 - time2 (sec)
 //6 - data0
 //7 - data1
 //8 - data2
@@ -10,15 +10,34 @@
 //10 - xor
 //11 - end (0xC0)
 //
-//0x00:
-//0xAA00001212349EC0
+//0x00 - start adc, data - set channels, speed, mode, amount of counts:
+//0	x	0				0		0								0				0 0 0 0
+//		0	0	0	0
+//		pc0	pc1	pc2	pc3	count	000 0: 1.5 ADC clock cycles		0 - circular	amount
+//		1 - on			1..4	001 1: 2.5 ADC clock cycles		1 - burst
+//		0 - off					010 2: 4.5 ADC clock cycles
+//								011 3: 7.5 ADC clock cycles
+//								100 4: 19.5 ADC clock cycles
+//								101 5: 61.5 ADC clock cycles
+//								110 6: 181.5 ADC clock cycles
+//								111 7: 601.5 ADC clock cycles
+
+
+
 
 
 #include "stm32f3xx.h"
 
-uint16_t dma_data[256];
-uint8_t usart_tx_buffer[256]; // 128 значений по 2 байта
-uint8_t data_ready = 0;
+#define MAX_ADC_CHANNELS 4
+
+uint8_t active_channels[MAX_ADC_CHANNELS];
+uint8_t num_channels = 0;
+volatile uint16_t samples_count = 0;
+
+#define ADC_BUF_SIZE 512
+volatile uint16_t dma_data[ADC_BUF_SIZE];
+volatile uint8_t usart_tx_buffer[ADC_BUF_SIZE * 2];
+volatile uint8_t data_ready = 0;
 
 #define RX_BUF_SIZE 512
 volatile uint8_t rx_buf[RX_BUF_SIZE];
@@ -28,12 +47,12 @@ volatile uint16_t rx_tail = 0;
 volatile uint8_t rx_data_buf[RX_BUF_SIZE];
 volatile uint16_t rx_data_head = 0;
 volatile uint16_t rx_data_tail = 0;
-
+volatile uint8_t cmd;
 volatile uint8_t cmd_received = 0;
 
-void adc_start_once() {
-	ADC1->CR |= ADC_CR_ADSTART;
-}
+volatile uint8_t click_processed = 0;
+
+// USART receive
 
 int get_from_head(uint8_t* byte) {
 	if (rx_data_head == rx_data_tail) {
@@ -75,7 +94,6 @@ int process_command(){
 	uint8_t byte;
 	uint8_t sync = 0xAA;
 	uint8_t weight;
-	uint8_t cmd;
 	uint8_t time1;
 	uint8_t time2;
 	while (1) { // ищем байт инициализации
@@ -108,17 +126,18 @@ int process_command(){
 		return 3; // данные повреждены
 	}
 	get_from_head(&byte);
-	switch (cmd) {
-		case 0x00:
-//			adc_start_once();
-			get_from_tail(&byte);
-			uint16_t data = byte << 8;
-			get_from_tail(&byte);
-			data |= byte;
-			break;
-	}
 	return 0;
 }
+
+void USART2_IRQHandler() {
+    if (USART2->ISR & USART_ISR_RXNE) {
+    	rx_buf[rx_head] = USART2->RDR;
+    	if (rx_buf[rx_head] == 0xC0) cmd_received = 1;
+		rx_head = (rx_head + 1) % RX_BUF_SIZE;
+    }
+}
+
+// USART transmit
 
 void prepare_usart_tx_buffer(uint16_t start, uint16_t length) {
 	for (uint16_t i = 0; i < length; ++i) {
@@ -136,13 +155,13 @@ void usart_dma_send(uint16_t length) {
 
 void data_convert() {
 	if (data_ready == 1) {
-		prepare_usart_tx_buffer(0, 128);
-		usart_dma_send(128 * 2);
+		prepare_usart_tx_buffer(0, samples_count / 2);
+		usart_dma_send(samples_count);
 		data_ready = 0;
 	}
 	if (data_ready == 2) {
-		prepare_usart_tx_buffer(128, 128);
-		usart_dma_send(128 * 2);
+		prepare_usart_tx_buffer(samples_count / 2, samples_count / 2);
+		usart_dma_send(samples_count);
 		data_ready = 0;
 	}
 }
@@ -150,17 +169,6 @@ void data_convert() {
 void DMA1_Channel7_IRQHandler() {
 	if (DMA1->ISR & DMA_ISR_TCIF7) {
 		DMA1->IFCR |= DMA_IFCR_CTCIF7; // сброс флага
-	}
-}
-
-void DMA1_Channel1_IRQHandler() {
-	if (DMA1->ISR & DMA_ISR_HTIF1) {
-		DMA1->IFCR |= DMA_IFCR_CHTIF1;
-		data_ready = 1;
-	}
-	if (DMA1->ISR & DMA_ISR_TCIF1) {
-		DMA1->IFCR |= DMA_IFCR_CTCIF1;
-		data_ready = 2;
 	}
 }
 
@@ -183,21 +191,7 @@ void init_usart_dma_tx() {
 	// НЕ включаем здесь — включим при старте передачи
 }
 
-void USART2_IRQHandler() {
-    if (USART2->ISR & USART_ISR_RXNE) {
-    	rx_buf[rx_head] = USART2->RDR;
-
-    	if (rx_buf[rx_head] == 0xC0) cmd_received = 1;
-
-		rx_head = (rx_head + 1) % RX_BUF_SIZE;
-    }
-}
-
-void init_adc_dma_usart() {
-	//init gpio pa1
-	RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
-	GPIOA->MODER |= GPIO_MODER_MODER1;	//pa1 as analog adc1_in2
-
+void init_pll_usart() {
 	//init clock as pll
 	RCC->CR &= ~RCC_CR_PLLON;
 	while((RCC->CR & RCC_CR_PLLRDY) == RCC_CR_PLLRDY);
@@ -209,42 +203,6 @@ void init_adc_dma_usart() {
 	RCC->CFGR |= RCC_CFGR_SW_PLL; // set pll as main clock
 	while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_PLL);
 	SystemCoreClockUpdate();
-
-	//init adc12
-	RCC->AHBENR |= RCC_AHBENR_ADC12EN;
-
-	//enable power
-	ADC1->CR &= ~ADC_CR_ADVREGEN_1;
-	ADC1->CR |= ADC_CR_ADVREGEN_0;
-
-	ADC1->CFGR |= ADC_CFGR_OVRMOD;
-	ADC1->CFGR |= ADC_CFGR_CONT;
-	ADC1->SQR1 &= ~(1 << 0); //only one channel (L -> 0000 - 1 conversion)
-	ADC1->SQR1 |= 2 << 6; //2nd channel
-
-	ADC1->SMPR1 &= ~ADC_SMPR1_SMP2;
-	ADC1->SMPR1 |= ADC_SMPR1_SMP2_2 | ADC_SMPR1_SMP2_1 | ADC_SMPR1_SMP2_0;
-
-	ADC1->CFGR |= ADC_CFGR_DMACFG | ADC_CFGR_DMAEN;	//enable DMA
-
-	//init dma
-	RCC->AHBENR |= RCC_AHBENR_DMA1EN;
-	DMA1_Channel1->CMAR = (uint32_t)dma_data; // записываем адрес массива в который записываем результат преобразования
-	DMA1_Channel1->CPAR = (uint32_t)&ADC1->DR; // записываем адрес данных ацп из которых будем считывать
-	DMA1_Channel1->CNDTR = 256; // количсетво элементов которые мы записываем
-	DMA1_Channel1->CCR |= DMA_CCR_CIRC; // непрерывное преобразование
-	DMA1_Channel1->CCR |= DMA_CCR_MSIZE_0 | DMA_CCR_PSIZE_0; // размер одного элемента
-	DMA1_Channel1->CCR |= DMA_CCR_TCIE | DMA_CCR_HTIE; // указывается двойная буферизация
-	DMA1_Channel1->CCR |= DMA_CCR_MINC; // инкрементируем память
-
-	NVIC_EnableIRQ(DMA1_Channel1_IRQn);
-
-	DMA1_Channel1->CCR |= DMA_CCR_EN;
-
-	//enable adc
-	ADC1->CR |= ADC_CR_ADEN;
-	while (!(ADC1->ISR & ADC_ISR_ADRD));
-//	ADC1->CR |= ADC_CR_ADSTART;
 
 	//init usart
 	RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
@@ -258,6 +216,121 @@ void init_adc_dma_usart() {
 	USART2->CR3 |= USART_CR3_DMAT; // enable dma mode for transmission
 	USART2->CR1 |= USART_CR1_UE; // usart enable
 }
+
+// ADC
+
+void DMA1_Channel1_IRQHandler() {
+	if (DMA1->ISR & DMA_ISR_HTIF1) {
+		DMA1->IFCR |= DMA_IFCR_CHTIF1;
+		data_ready = 1;
+	}
+	if (DMA1->ISR & DMA_ISR_TCIF1) {
+		DMA1->IFCR |= DMA_IFCR_CTCIF1;
+		data_ready = 2;
+	}
+}
+
+void adc_set_pc_channels(uint8_t *pc_pins, uint8_t count) { // pc0-pc3
+	if (count == 0 || count > MAX_ADC_CHANNELS) return;
+	RCC->AHBENR |= RCC_AHBENR_GPIOCEN;
+	// Настройка пинов PC0–PC3 как аналоговых
+	for (uint8_t i = 0; i < count; i++) {
+		uint8_t pc_pin = pc_pins[i];
+		if (pc_pin > 3) continue; // Только PC0–PC3 допустимы
+		GPIOC->MODER |= (3 << (2 * pc_pin)); // Analog mode
+		active_channels[i] = pc_pin + 6; // PC0 - ADC IN6, PC1 - IN7, ...
+	}
+	num_channels = count;
+	// Настройка SQR1
+	ADC1->SQR1 = 0;
+	for (uint8_t i = 0; i < count; i++) {
+		ADC1->SQR1 |= (active_channels[i] << (6 + i * 6)); // SQ1, SQ2, ...
+	}
+	ADC1->SQR1 |= (count - 1); // L: количество каналов - 1
+}
+
+void adc_set_sampling_time(uint8_t smp_bits) {
+	if (smp_bits > 0b111) return; // допустимые значения: 0–7
+	// Очистка битов SMP6–SMP9 в SMPR1 (по 3 бита на каждый канал)
+	ADC1->SMPR1 &= ~(
+		(0b111 << 18) | // SMP6 (PC0 - IN6)
+		(0b111 << 21) | // SMP7 (PC1 - IN7)
+		(0b111 << 24) | // SMP8 (PC2 - IN8)
+		(0b111 << 27)   // SMP9 (PC3 - IN9)
+	);
+	// Установка одинакового значения smp_bits для всех 4 каналов
+	ADC1->SMPR1 |=
+		(smp_bits << 18) | // SMP6
+		(smp_bits << 21) | // SMP7
+		(smp_bits << 24) | // SMP8
+		(smp_bits << 27);  // SMP9
+}
+
+void stop_adc_dma() {
+	ADC1->CR |= ADC_CR_ADSTP; // остановить ADC
+	while (ADC1->CR & ADC_CR_ADSTP); // дождаться завершения
+	DMA1_Channel1->CCR &= ~DMA_CCR_EN;
+}
+
+void adc_start_burst(uint16_t n_total_samples) {
+	stop_adc_dma();
+	uint16_t dma_count = n_total_samples * num_channels;
+	if (dma_count > ADC_BUF_SIZE) dma_count = ADC_BUF_SIZE;
+
+	// Настройка DMA
+	DMA1_Channel1->CCR &= ~DMA_CCR_EN;
+	DMA1_Channel1->CMAR = (uint32_t)dma_data;
+	DMA1_Channel1->CPAR = (uint32_t)&ADC1->DR;
+	DMA1_Channel1->CNDTR = dma_count;
+	DMA1_Channel1->CCR = DMA_CCR_MINC |
+						 DMA_CCR_MSIZE_0 |
+						 DMA_CCR_PSIZE_0 |
+						 DMA_CCR_TCIE |
+						 DMA_CCR_HTIE;
+	DMA1_Channel1->CCR |= DMA_CCR_EN;
+
+	// Настройка ADC
+	RCC->AHBENR |= RCC_AHBENR_ADC12EN;
+	ADC1->CR &= ~ADC_CR_ADVREGEN_1;
+	ADC1->CR |= ADC_CR_ADVREGEN_0;
+	ADC1->CFGR &= ~ADC_CFGR_CONT;
+	ADC1->CFGR |= ADC_CFGR_DMAEN | ADC_CFGR_OVRMOD;
+
+	ADC1->CR |= ADC_CR_ADEN;
+	while (!(ADC1->ISR & ADC_ISR_ADRD));
+	ADC1->CR |= ADC_CR_ADSTART;
+}
+
+void adc_start_cycle(uint16_t n_per_cycle) {
+	stop_adc_dma();
+	uint16_t dma_count = n_per_cycle * num_channels;
+	if (dma_count > ADC_BUF_SIZE) dma_count = ADC_BUF_SIZE;
+
+	// Настройка DMA
+	DMA1_Channel1->CCR &= ~DMA_CCR_EN;
+	DMA1_Channel1->CMAR = (uint32_t)dma_data;
+	DMA1_Channel1->CPAR = (uint32_t)&ADC1->DR;
+	DMA1_Channel1->CNDTR = dma_count;
+	DMA1_Channel1->CCR = DMA_CCR_MINC |
+						 DMA_CCR_CIRC |
+						 DMA_CCR_TCIE |
+						 DMA_CCR_HTIE |
+						 DMA_CCR_MSIZE_0 |
+						 DMA_CCR_PSIZE_0;
+	DMA1_Channel1->CCR |= DMA_CCR_EN;
+
+	// Настройка ADC
+	RCC->AHBENR |= RCC_AHBENR_ADC12EN;
+	ADC1->CR &= ~ADC_CR_ADVREGEN_1;
+	ADC1->CR |= ADC_CR_ADVREGEN_0;
+	ADC1->CFGR |= ADC_CFGR_DMAEN | ADC_CFGR_CONT | ADC_CFGR_OVRMOD;
+
+	ADC1->CR |= ADC_CR_ADEN;
+	while (!(ADC1->ISR & ADC_ISR_ADRD));
+	ADC1->CR |= ADC_CR_ADSTART;
+}
+
+// TIM
 
 #define SET_AF(num_pin, num_af) (num_af << (num_pin * 4))
 
@@ -320,23 +393,95 @@ void init_tim2_as_pwm() { // pb10 pb11
 
 // need to init tim3 tim4
 
+// Button
+
 void init_pa5() {
 	RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
 	GPIOA->MODER &= ~GPIO_MODER_MODER5;
 	GPIOA->MODER |= GPIO_MODER_MODER5_0; // output
 }
 
+void EXTI15_10_IRQHandler() {
+	if (EXTI->PR & EXTI_PR_PR13) {
+		EXTI->PR |= EXTI_PR_PR13;
+		click_processed = 0;
+	}
+}
+
+void init_button_pc13() {
+	RCC->AHBENR |= RCC_AHBENR_GPIOCEN;
+	GPIOC->MODER &= ~GPIO_MODER_MODER13;
+	GPIOC->PUPDR |= GPIO_PUPDR_PUPDR13_0; // pull up resistor
+
+	EXTI->IMR |= EXTI_IMR_MR13;
+	EXTI->RTSR |= EXTI_FTSR_TR13;
+
+	RCC->APB2ENR |= RCC_APB2ENR_SYSCFGEN;
+	SYSCFG->EXTICR[3] &= ~(SYSCFG_EXTICR4_EXTI13);
+	SYSCFG->EXTICR[3] |= SYSCFG_EXTICR4_EXTI13_PC;
+
+	NVIC_SetPriority(EXTI15_10_IRQn, 0);
+	NVIC_EnableIRQ(EXTI15_10_IRQn);
+}
+
+void adc_start() {
+	uint8_t byte;
+	get_from_tail(&byte);
+	uint8_t count = byte & 0x0F;
+	uint8_t channels_raw = byte >> 4;
+	uint8_t channels[count];
+	uint8_t counter = 0;
+	for (uint8_t i = 0; i < 4; i++) {
+		if ((channels_raw >> i) & 1) {
+			channels[counter] = i;
+			counter++;
+		}
+	}
+	adc_set_pc_channels(channels, count);
+
+	get_from_tail(&byte);
+	uint8_t speed = byte << 4;
+	uint8_t mode = byte & 0x0F;
+	adc_set_sampling_time(speed);
+
+	get_from_tail(&byte);
+	uint16_t n_samples = 0;
+	n_samples |= byte << 8;
+	get_from_tail(&byte);
+	n_samples |= byte;
+	if (mode == 0) adc_start_cycle(n_samples);
+	if (mode == 1) adc_start_burst(n_samples);
+}
+
+void btn_process() {
+	if (GPIOC->IDR & GPIO_IDR_13 || click_processed) return;
+	for (uint8_t i = 0; i < 25; i++);
+	if (GPIOC->IDR & GPIO_IDR_13) return;
+	click_processed = 1;
+	switch (cmd) {
+		case 0x00:
+			adc_start();
+			break;
+		case 0x01:
+			break;
+	}
+}
+
+
+
 int main(void)
 {
-	init_adc_dma_usart();
+	init_pll_usart();
 	init_usart_dma_tx();
-
 	init_pa5();
-
+	init_button_pc13();
 	while(1) {
 		data_convert();
+
 		if (cmd_received) process_command();
 		cmd_received = 0;
+
+		btn_process();
 	}
 	return 0;
 }

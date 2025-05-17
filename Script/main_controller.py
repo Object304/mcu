@@ -2,7 +2,7 @@ import serial
 import threading
 import os
 import subprocess
-import signal
+import datetime
 
 # Настройка COM-порта
 ser = serial.Serial(
@@ -41,11 +41,38 @@ def read_from_serial():
                 except:
                     break
 
+# Формирование команды по новому формату
+def build_command(cmd_str, data_strs):
+    try:
+        cmd = int(cmd_str, 16)
+        data = [int(d, 16) for d in data_strs if d.strip() != ""]
+    except ValueError:
+        print("Ошибка: неверный формат байтов (ожидается формат '00')")
+        return None
+
+    weight = 0x01 if len(data) >= 128 else 0x00
+
+    now = datetime.datetime.now()
+    time1 = now.minute
+    time2 = now.second
+
+    command = [0xAA, weight, cmd, time1, time2] + data
+
+    # Вычисляем XOR всех байт от AA до последнего data
+    xor_val = 0
+    for b in command:
+        xor_val ^= b
+
+    command.append(xor_val)
+    command.append(0xC0)
+
+    return bytes(command)
+
 def main():
     global running, reading
     threading.Thread(target=read_from_serial, daemon=True).start()
 
-    print("Команды: 0x..., stop, continue, clear, close")
+    print("Команды: <cmd> <data...>, stop, continue, clear, close")
     while True:
         try:
             user_input = input().strip()
@@ -60,19 +87,21 @@ def main():
             elif user_input.lower() == "close":
                 running = False
                 ser.close()
-                # Закрыть viewer по PID
                 viewer_proc.terminate()
                 break
-            elif user_input.startswith("0x"):
-                hex_str = user_input[2:]
-                if len(hex_str) % 2 != 0:
+            else:
+                # Попытка разобрать команду как cmd + data
+                tokens = user_input.split()
+                if not tokens:
                     continue
-                try:
-                    command_bytes = bytes.fromhex(hex_str)
-                    ser.write(command_bytes)
-                except ValueError:
-                    pass
-        except Exception:
+                cmd = tokens[0]
+                data = tokens[1:] if len(tokens) > 1 else []
+                packet = build_command(cmd, data)
+                if packet:
+                    ser.write(packet)
+                    print(f"Отправлено: {[hex(b) for b in packet]}")
+        except Exception as e:
+            print(f"Ошибка: {e}")
             break
 
 if __name__ == "__main__":
