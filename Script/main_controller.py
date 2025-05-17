@@ -4,7 +4,6 @@ import os
 import subprocess
 import datetime
 
-# Настройка COM-порта
 ser = serial.Serial(
     port='COM3',  # Укажи нужный порт
     baudrate=921600,
@@ -17,18 +16,15 @@ output_file = "adc_output.txt"
 reading = True
 running = True
 
-# Запуск viewer.py и сохранение процесса
 viewer_proc = subprocess.Popen(
     ["python", "viewer.py"],
     creationflags=subprocess.CREATE_NEW_CONSOLE
 )
 
-# Поток чтения из порта
 def read_from_serial():
     global reading
-    with open(output_file, "w"):  # очистить файл
+    with open(output_file, "w"):
         pass
-
     with open(output_file, "a") as f:
         while running:
             if reading:
@@ -41,7 +37,6 @@ def read_from_serial():
                 except:
                     break
 
-# Формирование команды по новому формату
 def build_command(cmd_str, data_strs):
     try:
         cmd = int(cmd_str, 16)
@@ -58,7 +53,6 @@ def build_command(cmd_str, data_strs):
 
     command = [0xAA, weight, cmd, time1, time2] + data
 
-    # Вычисляем XOR всех байт от AA до последнего data
     xor_val = 0
     for b in command:
         xor_val ^= b
@@ -68,14 +62,27 @@ def build_command(cmd_str, data_strs):
 
     return bytes(command)
 
+def send_to_viewer_control(cmd):
+    with open("viewer_control.txt", "w") as f:
+        f.write(cmd)
+
 def main():
     global running, reading
     threading.Thread(target=read_from_serial, daemon=True).start()
 
-    print("Команды: <cmd> <data...>, stop, continue, clear, close")
+    print("Команды:")
+    print("  <cmd> <data...>  — отправить hex-команду (например: 12 A1 00)")
+    print("  stop             — остановить приём данных")
+    print("  continue         — продолжить приём данных")
+    print("  clear            — очистить файл adc_output.txt")
+    print("  close            — закрыть оба окна")
+    print("  refresh          — обновить viewer вручную")
+    print("  refresh_en       — включить автообновление viewer")
+    print("  refresh_dis      — отключить автообновление viewer")
+
     while True:
         try:
-            user_input = input().strip()
+            user_input = input("> ").strip()
 
             if user_input.lower() == "stop":
                 reading = False
@@ -89,8 +96,9 @@ def main():
                 ser.close()
                 viewer_proc.terminate()
                 break
+            elif user_input.lower() in ("refresh", "refresh_en", "refresh_dis"):
+                send_to_viewer_control(user_input.lower())
             else:
-                # Попытка разобрать команду как cmd + data
                 tokens = user_input.split()
                 if not tokens:
                     continue

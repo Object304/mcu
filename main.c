@@ -22,8 +22,8 @@
 //								110 6: 181.5 ADC clock cycles
 //								111 7: 601.5 ADC clock cycles
 
-
-
+//00 81 71 00 01 - 1 sample, 00 81 71 02 00 - 512, 00 81 71 01 00 - 256, 00 81 71 00 80 - 128
+void adc_start();
 
 
 #include "stm32f3xx.h"
@@ -58,7 +58,7 @@ int get_from_head(uint8_t* byte) {
 	if (rx_data_head == rx_data_tail) {
 		return 0; // Буфер пуст
 	}
-	*byte = rx_data_buf[rx_data_head];
+	*byte = rx_data_buf[rx_data_head - 1];
 	rx_data_head = (rx_data_head == 0) ? RX_BUF_SIZE - 1 : rx_data_head - 1;
 	return 1;
 }
@@ -91,6 +91,7 @@ int usart2_read_byte(uint8_t *data) {
 }
 
 int process_command(){
+	rx_data_head = rx_data_tail = 0;
 	uint8_t byte;
 	uint8_t sync = 0xAA;
 	uint8_t weight;
@@ -160,8 +161,14 @@ void data_convert() {
 		data_ready = 0;
 	}
 	if (data_ready == 2) {
-		prepare_usart_tx_buffer(samples_count / 2, samples_count / 2);
-		usart_dma_send(samples_count);
+		if (samples_count / 2 == 0) {
+			prepare_usart_tx_buffer(0, 1);
+			usart_dma_send(2);
+		}
+		else {
+			prepare_usart_tx_buffer(samples_count / 2, samples_count / 2);
+			usart_dma_send(samples_count);
+		}
 		data_ready = 0;
 	}
 }
@@ -277,17 +284,22 @@ void adc_start_burst(uint16_t n_total_samples) {
 	uint16_t dma_count = n_total_samples * num_channels;
 	if (dma_count > ADC_BUF_SIZE) dma_count = ADC_BUF_SIZE;
 
+	samples_count = dma_count;
+
 	// Настройка DMA
 	DMA1_Channel1->CCR &= ~DMA_CCR_EN;
+	RCC->AHBENR |= RCC_AHBENR_DMA1EN;
 	DMA1_Channel1->CMAR = (uint32_t)dma_data;
 	DMA1_Channel1->CPAR = (uint32_t)&ADC1->DR;
-	DMA1_Channel1->CNDTR = dma_count;
+	DMA1_Channel1->CNDTR = samples_count;
 	DMA1_Channel1->CCR = DMA_CCR_MINC |
 						 DMA_CCR_MSIZE_0 |
 						 DMA_CCR_PSIZE_0 |
 						 DMA_CCR_TCIE |
 						 DMA_CCR_HTIE;
+	NVIC_EnableIRQ(DMA1_Channel1_IRQn);
 	DMA1_Channel1->CCR |= DMA_CCR_EN;
+
 
 	// Настройка ADC
 	RCC->AHBENR |= RCC_AHBENR_ADC12EN;
@@ -306,17 +318,21 @@ void adc_start_cycle(uint16_t n_per_cycle) {
 	uint16_t dma_count = n_per_cycle * num_channels;
 	if (dma_count > ADC_BUF_SIZE) dma_count = ADC_BUF_SIZE;
 
+	samples_count = dma_count;
+
 	// Настройка DMA
 	DMA1_Channel1->CCR &= ~DMA_CCR_EN;
+	RCC->AHBENR |= RCC_AHBENR_DMA1EN;
 	DMA1_Channel1->CMAR = (uint32_t)dma_data;
 	DMA1_Channel1->CPAR = (uint32_t)&ADC1->DR;
-	DMA1_Channel1->CNDTR = dma_count;
+	DMA1_Channel1->CNDTR = samples_count;
 	DMA1_Channel1->CCR = DMA_CCR_MINC |
 						 DMA_CCR_CIRC |
 						 DMA_CCR_TCIE |
 						 DMA_CCR_HTIE |
 						 DMA_CCR_MSIZE_0 |
 						 DMA_CCR_PSIZE_0;
+	NVIC_EnableIRQ(DMA1_Channel1_IRQn);
 	DMA1_Channel1->CCR |= DMA_CCR_EN;
 
 	// Настройка ADC
@@ -433,14 +449,14 @@ void adc_start() {
 	uint8_t counter = 0;
 	for (uint8_t i = 0; i < 4; i++) {
 		if ((channels_raw >> i) & 1) {
-			channels[counter] = i;
+			channels[counter] = 3 - i;
 			counter++;
 		}
 	}
 	adc_set_pc_channels(channels, count);
 
 	get_from_tail(&byte);
-	uint8_t speed = byte << 4;
+	uint8_t speed = byte >> 4;
 	uint8_t mode = byte & 0x0F;
 	adc_set_sampling_time(speed);
 
@@ -455,9 +471,11 @@ void adc_start() {
 
 void btn_process() {
 	if (GPIOC->IDR & GPIO_IDR_13 || click_processed) return;
-	for (uint8_t i = 0; i < 25; i++);
+	for (uint8_t i = 0; i < 30; i++);
 	if (GPIOC->IDR & GPIO_IDR_13) return;
+
 	click_processed = 1;
+	uint16_t rx_data_tail_temp = rx_data_tail;
 	switch (cmd) {
 		case 0x00:
 			adc_start();
@@ -465,6 +483,7 @@ void btn_process() {
 		case 0x01:
 			break;
 	}
+	rx_data_tail = rx_data_tail_temp;
 }
 
 
