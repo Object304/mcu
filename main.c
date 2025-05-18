@@ -23,6 +23,8 @@
 //								111 7: 601.5 ADC clock cycles
 
 //00 81 71 00 01 - 1 sample, 00 81 71 02 00 - 512, 00 81 71 01 00 - 256, 00 81 71 00 80 - 128
+//00 F4 71 00 01 - 4 channels 1 sample burst
+//00 81 70 00 01 - circular 1 sample
 
 #include "stm32f3xx.h"
 
@@ -340,7 +342,10 @@ void adc_start_cycle(uint16_t n_per_cycle) {
 	RCC->AHBENR |= RCC_AHBENR_ADC12EN;
 	ADC1->CR &= ~ADC_CR_ADVREGEN_1;
 	ADC1->CR |= ADC_CR_ADVREGEN_0;
-	ADC1->CFGR |= ADC_CFGR_DMAEN | ADC_CFGR_CONT | ADC_CFGR_OVRMOD;
+	ADC1->CFGR |= ADC_CFGR_DMAEN |
+				  ADC_CFGR_CONT |
+				  ADC_CFGR_OVRMOD |
+				  ADC_CFGR_DMACFG;
 
 	ADC1->CR |= ADC_CR_ADEN;
 	while (!(ADC1->ISR & ADC_ISR_ADRD));
