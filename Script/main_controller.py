@@ -15,6 +15,7 @@ ser = serial.Serial(
 output_file = "adc_output.txt"
 reading = True
 running = True
+convert_to_temp = False
 
 viewer_proc = subprocess.Popen(
     ["python", "viewer.py"],
@@ -22,7 +23,7 @@ viewer_proc = subprocess.Popen(
 )
 
 def read_from_serial():
-    global reading
+    global reading, convert_to_temp
     with open(output_file, "w"):
         pass
     with open(output_file, "a") as f:
@@ -31,8 +32,15 @@ def read_from_serial():
                 try:
                     lsb = ser.read(1)
                     msb = ser.read(1)
-                    value = int.from_bytes(lsb + msb, byteorder='little')
-                    f.write(f"{value}\n")
+                    raw = int.from_bytes(lsb + msb, byteorder='little')
+
+                    if convert_to_temp:
+                        voltage = (raw * 3.3) / 4095.0
+                        temp = ((1.43 - voltage) * 1000.0 / 4.3) + 25.0
+                        f.write(f"{temp:.2f}\n")
+                    else:
+                        f.write(f"{raw}\n")
+
                     f.flush()
                 except:
                     break
@@ -43,7 +51,7 @@ def build_command(cmd_str, data_strs):
         data = [int(d, 16) for d in data_strs if d.strip() != ""]
     except ValueError:
         print("Ошибка: неверный формат байтов (ожидается формат '00')")
-        return None
+        return None, None
 
     weight = 0x01 if len(data) >= 128 else 0x00
 
@@ -60,14 +68,14 @@ def build_command(cmd_str, data_strs):
     command.append(xor_val)
     command.append(0xC0)
 
-    return bytes(command)
+    return bytes(command), cmd
 
 def send_to_viewer_control(cmd):
     with open("viewer_control.txt", "w") as f:
         f.write(cmd)
 
 def main():
-    global running, reading
+    global running, reading, convert_to_temp
     threading.Thread(target=read_from_serial, daemon=True).start()
 
     print("Команды:")
@@ -102,10 +110,11 @@ def main():
                 tokens = user_input.split()
                 if not tokens:
                     continue
-                cmd = tokens[0]
+                cmd_str = tokens[0]
                 data = tokens[1:] if len(tokens) > 1 else []
-                packet = build_command(cmd, data)
+                packet, cmd_val = build_command(cmd_str, data)
                 if packet:
+                    convert_to_temp = (cmd_val == 0x05)
                     ser.write(packet)
                     print(f"Отправлено: {[hex(b) for b in packet]}")
         except Exception as e:
