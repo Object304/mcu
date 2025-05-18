@@ -23,8 +23,6 @@
 //								111 7: 601.5 ADC clock cycles
 
 //00 81 71 00 01 - 1 sample, 00 81 71 02 00 - 512, 00 81 71 01 00 - 256, 00 81 71 00 80 - 128
-void adc_start();
-
 
 #include "stm32f3xx.h"
 
@@ -38,6 +36,7 @@ volatile uint16_t samples_count = 0;
 volatile uint16_t dma_data[ADC_BUF_SIZE];
 volatile uint8_t usart_tx_buffer[ADC_BUF_SIZE * 2];
 volatile uint8_t data_ready = 0;
+volatile uint8_t dma_tx_busy = 0;
 
 #define RX_BUF_SIZE 512
 volatile uint8_t rx_buf[RX_BUF_SIZE];
@@ -141,6 +140,7 @@ void USART2_IRQHandler() {
 // USART transmit
 
 void prepare_usart_tx_buffer(uint16_t start, uint16_t length) {
+	GPIOA->ODR |= GPIO_ODR_5;
 	for (uint16_t i = 0; i < length; ++i) {
 		uint16_t value = dma_data[start + i];
 		usart_tx_buffer[2*i]     = value & 0xFF;        // LSB (LSB first)
@@ -149,6 +149,10 @@ void prepare_usart_tx_buffer(uint16_t start, uint16_t length) {
 }
 
 void usart_dma_send(uint16_t length) {
+
+	while(dma_tx_busy);
+	dma_tx_busy = 1;
+
 	DMA1_Channel7->CCR &= ~DMA_CCR_EN; // остановка
 	DMA1_Channel7->CNDTR = length;     // сколько байт передать
 	DMA1_Channel7->CCR |= DMA_CCR_EN;  // запуск
@@ -156,19 +160,8 @@ void usart_dma_send(uint16_t length) {
 
 void data_convert() {
 	if (data_ready == 1) {
-		prepare_usart_tx_buffer(0, samples_count / 2);
-		usart_dma_send(samples_count);
-		data_ready = 0;
-	}
-	if (data_ready == 2) {
-		if (samples_count / 2 == 0) {
-			prepare_usart_tx_buffer(0, 1);
-			usart_dma_send(2);
-		}
-		else {
-			prepare_usart_tx_buffer(samples_count / 2, samples_count / 2);
-			usart_dma_send(samples_count);
-		}
+		prepare_usart_tx_buffer(0, samples_count);
+		usart_dma_send(samples_count * 2);
 		data_ready = 0;
 	}
 }
@@ -176,6 +169,7 @@ void data_convert() {
 void DMA1_Channel7_IRQHandler() {
 	if (DMA1->ISR & DMA_ISR_TCIF7) {
 		DMA1->IFCR |= DMA_IFCR_CTCIF7; // сброс флага
+		dma_tx_busy = 0;
 	}
 }
 
@@ -227,13 +221,9 @@ void init_pll_usart() {
 // ADC
 
 void DMA1_Channel1_IRQHandler() {
-	if (DMA1->ISR & DMA_ISR_HTIF1) {
-		DMA1->IFCR |= DMA_IFCR_CHTIF1;
-		data_ready = 1;
-	}
 	if (DMA1->ISR & DMA_ISR_TCIF1) {
 		DMA1->IFCR |= DMA_IFCR_CTCIF1;
-		data_ready = 2;
+		data_ready = 1;
 	}
 }
 
@@ -274,10 +264,16 @@ void adc_set_sampling_time(uint8_t smp_bits) {
 }
 
 void stop_adc_dma() {
-	ADC1->CR |= ADC_CR_ADSTP; // остановить ADC
-	while (ADC1->CR & ADC_CR_ADSTP); // дождаться завершения
+	// Остановка АЦП
+	if (ADC1->CR & ADC_CR_ADEN) {
+		ADC1->CR |= ADC_CR_ADDIS;                  // запросить отключение
+		while (ADC1->CR & ADC_CR_ADEN);            // подождать, пока отключится
+	}
+
+	// Остановка DMA
 	DMA1_Channel1->CCR &= ~DMA_CCR_EN;
 }
+
 
 void adc_start_burst(uint16_t n_total_samples) {
 	stop_adc_dma();
@@ -295,8 +291,8 @@ void adc_start_burst(uint16_t n_total_samples) {
 	DMA1_Channel1->CCR = DMA_CCR_MINC |
 						 DMA_CCR_MSIZE_0 |
 						 DMA_CCR_PSIZE_0 |
-						 DMA_CCR_TCIE |
-						 DMA_CCR_HTIE;
+						 DMA_CCR_TCIE;
+	NVIC_SetPriority(DMA1_Channel1_IRQn, 0);
 	NVIC_EnableIRQ(DMA1_Channel1_IRQn);
 	DMA1_Channel1->CCR |= DMA_CCR_EN;
 
@@ -310,7 +306,13 @@ void adc_start_burst(uint16_t n_total_samples) {
 
 	ADC1->CR |= ADC_CR_ADEN;
 	while (!(ADC1->ISR & ADC_ISR_ADRD));
-	ADC1->CR |= ADC_CR_ADSTART;
+
+	for (uint16_t i = 0; i < n_total_samples; i++) {
+		while (ADC1->CR & ADC_CR_ADSTART);
+		ADC1->CR |= ADC_CR_ADSTART;
+		while (!(ADC1->ISR & ADC_ISR_EOS)); // дождаться окончания
+		ADC1->ISR |= ADC_ISR_EOS;
+	}
 }
 
 void adc_start_cycle(uint16_t n_per_cycle) {
@@ -329,7 +331,6 @@ void adc_start_cycle(uint16_t n_per_cycle) {
 	DMA1_Channel1->CCR = DMA_CCR_MINC |
 						 DMA_CCR_CIRC |
 						 DMA_CCR_TCIE |
-						 DMA_CCR_HTIE |
 						 DMA_CCR_MSIZE_0 |
 						 DMA_CCR_PSIZE_0;
 	NVIC_EnableIRQ(DMA1_Channel1_IRQn);
