@@ -25,7 +25,7 @@
 //								110 6: 181.5 ADC clock cycles
 //								111 7: 601.5 ADC clock cycles
 //
-//00 81 71 00 01 - 1 sample, 00 81 71 02 00 - 512, 00 81 71 01 00 - 256, 00 81 71 00 80 - 128
+//00 81 71 00 01 - burst 1 sample, 00 81 71 02 00 - 512, 00 81 71 01 00 - 256, 00 81 71 00 80 - 128
 //00 F4 71 00 01 - 4 channels 1 sample burst
 //00 81 70 00 01 - circular 1 sample, 00 F4 70 00 01 - circular 1 sample 4 channels
 //
@@ -184,7 +184,7 @@ void usart_dma_send(uint16_t length) {
 	dma_tx_busy = 1;
 
 	DMA1_Channel7->CCR &= ~DMA_CCR_EN; // остановка
-	DMA1_Channel7->CNDTR = length;     // сколько байт передать
+	DMA1_Channel7->CNDTR = length; // сколько байт передать
 	DMA1_Channel7->CCR |= DMA_CCR_EN;  // запуск
 }
 
@@ -218,8 +218,6 @@ void init_usart_dma_tx() {
 		DMA_CCR_TCIE;       // прерывание по завершению
 
 	NVIC_EnableIRQ(DMA1_Channel7_IRQn);
-
-	// НЕ включаем здесь — включим при старте передачи
 }
 
 void init_pll_usart() {
@@ -294,24 +292,6 @@ void adc_set_sampling_time(uint8_t smp_bits) {
 }
 
 void stop_adc_dma() {
-//	// Остановка АЦП
-//	if (ADC1->CR & ADC_CR_ADEN) {
-//		ADC1->CR |= ADC_CR_ADDIS;                  // запросить отключение
-//		while (ADC1->CR & ADC_CR_ADEN);            // подождать, пока отключится
-//	}
-//
-//	// Остановка DMA
-//	DMA1_Channel1->CCR &= ~DMA_CCR_EN;
-//
-//	ADC1->CFGR = 0;
-//	ADC1->SQR1 = 0;
-//	ADC1->SQR2 = 0;
-//	ADC1->SQR3 = 0;
-//	ADC1->SQR4 = 0;
-//	ADC1->SMPR1 = 0;
-//	ADC1->SMPR2 = 0;
-//	ADC1->ISR = ADC_ISR_EOC | ADC_ISR_EOS | ADC_ISR_OVR;  // очистить флаги
-
 	RCC->AHBRSTR |= RCC_AHBRSTR_ADC12RST;
 	RCC->AHBRSTR &= ~RCC_AHBRSTR_ADC12RST;
 
@@ -367,178 +347,77 @@ void adc_start_cycle(uint16_t n_per_cycle) {
 	if (dma_count > ADC_BUF_SIZE) dma_count = ADC_BUF_SIZE;
 
 	samples_count = dma_count;
-
 	// Настройка DMA
 	DMA1_Channel1->CCR &= ~DMA_CCR_EN;
 	RCC->AHBENR |= RCC_AHBENR_DMA1EN;
+
 	DMA1_Channel1->CMAR = (uint32_t)dma_data;
 	DMA1_Channel1->CPAR = (uint32_t)&ADC1->DR;
 	DMA1_Channel1->CNDTR = samples_count;
-	DMA1_Channel1->CCR = DMA_CCR_MINC |
-						 DMA_CCR_CIRC |
-						 DMA_CCR_TCIE |
-						 DMA_CCR_MSIZE_0 |
-						 DMA_CCR_PSIZE_0;
+
+	DMA1_Channel1->CCR = DMA_CCR_MINC
+					   | DMA_CCR_CIRC
+					   | DMA_CCR_TCIE
+					   | DMA_CCR_MSIZE_0
+					   | DMA_CCR_PSIZE_0;
+
 	NVIC_EnableIRQ(DMA1_Channel1_IRQn);
 	DMA1_Channel1->CCR |= DMA_CCR_EN;
 
 	// Настройка ADC
 	RCC->AHBENR |= RCC_AHBENR_ADC12EN;
+
+	if (ADC1->CR & ADC_CR_ADEN) {
+		ADC1->CR |= ADC_CR_ADDIS;
+		while (ADC1->CR & ADC_CR_ADEN);
+	}
+
 	ADC1->CR &= ~ADC_CR_ADVREGEN_1;
 	ADC1->CR |= ADC_CR_ADVREGEN_0;
-	ADC1->CFGR |= ADC_CFGR_DMAEN |
-				  ADC_CFGR_CONT |
-				  ADC_CFGR_OVRMOD |
-				  ADC_CFGR_DMACFG;
+	for (uint16_t i = 0; i < 1000; i++);
+
+	ADC1->CR |= ADC_CR_ADCAL;
+	while (ADC1->CR & ADC_CR_ADCAL);
+
+	ADC1->CFGR &= ~(ADC_CFGR_CONT | ADC_CFGR_DMAEN | ADC_CFGR_DMACFG);
+	ADC1->CFGR |= ADC_CFGR_DMAEN
+				| ADC_CFGR_DMACFG
+				| ADC_CFGR_CONT
+				| ADC_CFGR_OVRMOD;
 
 	ADC1->CR |= ADC_CR_ADEN;
 	while (!(ADC1->ISR & ADC_ISR_ADRD));
 	ADC1->CR |= ADC_CR_ADSTART;
 }
 
-// TIM
+void adc1_read_temp() {
+	ADC1->CR |= ADC_CR_ADSTART;
+	while (!(ADC1->ISR & ADC_ISR_EOC));
+	uint16_t raw = ADC1->DR;
 
-#define SET_AF(num_pin, num_af) (num_af << (num_pin * 4))
-
-void init_tim1_as_pwm() { // pa8 pa9
-	// Очистка и установка MODER:
-	GPIOA->MODER &= ~(GPIO_MODER_MODER8 | GPIO_MODER_MODER9);
-	GPIOA->MODER |= (GPIO_MODER_MODER8_1 | GPIO_MODER_MODER9_1);
-
-	// Очистка AFR:
-	GPIOA->AFR[1] &= ~((0xF << 0) | (0xF << 4));
-	GPIOA->AFR[1] |= (0x6 << 0) | (0x6 << 4);
-
-	// Включение таймера и сброс:
-	RCC->APB2RSTR |= RCC_APB2RSTR_TIM1RST;
-	RCC->APB2RSTR &= ~RCC_APB2RSTR_TIM1RST;
-
-	RCC->APB2ENR |= RCC_APB2ENR_TIM1EN;
-
-	TIM1->PSC = 31;
-	TIM1->ARR = 999;
-
-	TIM1->CCMR1 &= ~(TIM_CCMR1_CC1S | TIM_CCMR1_OC1M | TIM_CCMR1_OC1PE | TIM_CCMR1_OC1CE);
-	TIM1->CCMR1 |= (TIM_CCMR1_OC1M_2 | TIM_CCMR1_OC1M_1 | TIM_CCMR1_OC1PE);
-
-	TIM1->CCMR1 &= ~(TIM_CCMR1_CC2S | TIM_CCMR1_OC2M | TIM_CCMR1_OC2PE | TIM_CCMR1_OC2CE);
-	TIM1->CCMR1 |= (TIM_CCMR1_OC2M_2 | TIM_CCMR1_OC2M_1 | TIM_CCMR1_OC2PE);
-
-	TIM1->CCER |= TIM_CCER_CC1E | TIM_CCER_CC2E;
-
-	TIM1->CCR1 = 500;
-	TIM1->CCR2 = 200;
-
-	TIM1->CR1 |= TIM_CR1_ARPE;
-	TIM1->EGR |= TIM_EGR_UG;
-
-	TIM1->BDTR |= TIM_BDTR_MOE;
-	TIM1->CR1 |= TIM_CR1_CEN;
-
+	// float temp = ((1.43f - ((raw * 3.3f) / 4095.0f)) * 1000.0f / 4.3f) + 25.0f;
+	usart_tx_buffer[0] = raw & 0xFF;
+	usart_tx_buffer[1] = (raw >> 8) & 0xFF;
+	usart_dma_send(2);
 }
 
-void init_tim2_as_pwm() { // pb10 pb11
-	// Включаем тактирование GPIOB и TIM2
-	RCC->AHBENR |= RCC_AHBENR_GPIOBEN;
-	RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
-	RCC->APB1RSTR |= RCC_APB1RSTR_TIM2RST;
-	RCC->APB1RSTR &= ~RCC_APB1RSTR_TIM2RST;
+void adc1_init_temp_sensor() {
+	RCC->AHBENR |= RCC_AHBENR_ADC12EN;
+	ADC1_2_COMMON->CCR |= ADC12_CCR_TSEN; // Температурный датчик включен
 
-	// Настраиваем GPIOB 10 и 11 в AF mode
-	GPIOB->MODER &= ~(GPIO_MODER_MODER10 | GPIO_MODER_MODER11);
-	GPIOB->MODER |= (GPIO_MODER_MODER10_1 | GPIO_MODER_MODER11_1);
+	ADC1->CR &= ~ADC_CR_ADEN;
+	ADC1->CR |= ADC_CR_ADCAL;
+	while (ADC1->CR & ADC_CR_ADCAL);
 
-	// Настраиваем AF1 для PB10, PB11
-	GPIOB->AFR[1] &= ~((0xF << 8) | (0xF << 12));
-	GPIOB->AFR[1] |= (0x1 << 8) | (0x1 << 12);
+	ADC1->CR |= ADC_CR_ADEN;
+	while (!(ADC1->ISR & ADC_ISR_ADRD));
 
-	// Настройка таймера
-	TIM2->PSC = 31;
-	TIM2->ARR = 999;
+	ADC1->SQR1 = (16 << 6); // Канал 16 в первый слот
 
-	// Устанавливаем режим PWM для каналов 3 и 4 без "стирания" установленных битов
-	uint32_t ccmr2 = TIM2->CCMR2;
-	ccmr2 &= ~(TIM_CCMR2_CC3S | TIM_CCMR2_OC3M | TIM_CCMR2_OC3PE | TIM_CCMR2_CC4S | TIM_CCMR2_OC4M | TIM_CCMR2_OC4PE);
-	ccmr2 |= (TIM_CCMR2_OC3M_1 | TIM_CCMR2_OC3M_2 | TIM_CCMR2_OC3PE);
-	ccmr2 |= (TIM_CCMR2_OC4M_1 | TIM_CCMR2_OC4M_2 | TIM_CCMR2_OC4PE);
-	TIM2->CCMR2 = ccmr2;
+	// Максимальное время выборки для канала 16
+	ADC1->SMPR1 |= (7 << 18);
 
-	// Включаем выходы каналов 3 и 4
-	TIM2->CCER |= TIM_CCER_CC3E | TIM_CCER_CC4E;
-
-	// Задаём скважность
-	TIM2->CCR3 = 500;
-	TIM2->CCR4 = 200;
-
-	// Разрешаем автоперезагрузку и обновляем
-	TIM2->CR1 |= TIM_CR1_ARPE;
-	TIM2->EGR |= TIM_EGR_UG;
-
-	// Включаем таймер
-	TIM2->CR1 |= TIM_CR1_CEN;
-
-
-}
-
-void init_tim3_as_pwm() { // PA6 (CH1), PA7 (CH2)
-	RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
-	GPIOA->MODER |= GPIO_MODER_MODER6_1 | GPIO_MODER_MODER7_1;     // Alternate function mode
-	GPIOA->AFR[0] |= SET_AF(6, 0x2) | SET_AF(7, 0x2);               // AF2 для TIM3
-
-	RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
-
-	TIM3->PSC = 31;     // Предделитель
-	TIM3->ARR = 999;    // Автоперезагрузка
-
-	// Настройка CH1
-	TIM3->CCMR1 &= ~TIM_CCMR1_CC1S;
-	TIM3->CCMR1 |= TIM_CCMR1_OC1M_1 | TIM_CCMR1_OC1M_2;  // PWM mode 1
-	TIM3->CCMR1 |= TIM_CCMR1_OC1PE;                     // preload
-
-	// Настройка CH2
-	TIM3->CCMR1 &= ~TIM_CCMR1_CC2S;
-	TIM3->CCMR1 |= TIM_CCMR1_OC2M_1 | TIM_CCMR1_OC2M_2;  // PWM mode 1
-	TIM3->CCMR1 |= TIM_CCMR1_OC2PE;
-
-	TIM3->CCER |= TIM_CCER_CC1E | TIM_CCER_CC2E;
-
-	TIM3->CCR1 = 500;  // 50% скважность
-	TIM3->CCR2 = 200;
-
-	TIM3->CR1 |= TIM_CR1_ARPE;
-	TIM3->EGR |= TIM_EGR_UG;  // Обновить регистры
-	TIM3->CR1 |= TIM_CR1_CEN; // Включить таймер
-}
-
-// Button
-
-void init_pa5() {
-	RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
-	GPIOA->MODER &= ~GPIO_MODER_MODER5;
-	GPIOA->MODER |= GPIO_MODER_MODER5_0; // output
-}
-
-void EXTI15_10_IRQHandler() {
-	if (EXTI->PR & EXTI_PR_PR13) {
-		EXTI->PR |= EXTI_PR_PR13;
-		click_processed = 0;
-	}
-}
-
-void init_button_pc13() {
-	RCC->AHBENR |= RCC_AHBENR_GPIOCEN;
-	GPIOC->MODER &= ~GPIO_MODER_MODER13;
-	GPIOC->PUPDR |= GPIO_PUPDR_PUPDR13_0; // pull up resistor
-
-	EXTI->IMR |= EXTI_IMR_MR13;
-	EXTI->RTSR |= EXTI_FTSR_TR13;
-
-	RCC->APB2ENR |= RCC_APB2ENR_SYSCFGEN;
-	SYSCFG->EXTICR[3] &= ~(SYSCFG_EXTICR4_EXTI13);
-	SYSCFG->EXTICR[3] |= SYSCFG_EXTICR4_EXTI13_PC;
-
-	NVIC_SetPriority(EXTI15_10_IRQn, 0);
-	NVIC_EnableIRQ(EXTI15_10_IRQn);
+	ADC1->CFGR &= ~ADC_CFGR_CONT;
 }
 
 void adc_start() {
@@ -568,6 +447,106 @@ void adc_start() {
 	n_samples |= byte;
 	if (mode == 0) adc_start_cycle(n_samples);
 	if (mode == 1) adc_start_burst(n_samples);
+}
+
+// TIM
+
+#define SET_AF(num_pin, num_af) (num_af << (num_pin * 4))
+
+void init_tim1_as_pwm() { // pa8 pa9
+	GPIOA->MODER &= ~(GPIO_MODER_MODER8 | GPIO_MODER_MODER9);
+	GPIOA->MODER |= (GPIO_MODER_MODER8_1 | GPIO_MODER_MODER9_1);
+
+	GPIOA->AFR[1] &= ~((0xF << 0) | (0xF << 4));
+	GPIOA->AFR[1] |= (0x6 << 0) | (0x6 << 4);
+
+	RCC->APB2RSTR |= RCC_APB2RSTR_TIM1RST;
+	RCC->APB2RSTR &= ~RCC_APB2RSTR_TIM1RST;
+
+	RCC->APB2ENR |= RCC_APB2ENR_TIM1EN;
+
+	TIM1->PSC = 31;
+	TIM1->ARR = 999;
+
+	TIM1->CCMR1 &= ~(TIM_CCMR1_CC1S | TIM_CCMR1_OC1M | TIM_CCMR1_OC1PE | TIM_CCMR1_OC1CE);
+	TIM1->CCMR1 |= (TIM_CCMR1_OC1M_2 | TIM_CCMR1_OC1M_1 | TIM_CCMR1_OC1PE);
+
+	TIM1->CCMR1 &= ~(TIM_CCMR1_CC2S | TIM_CCMR1_OC2M | TIM_CCMR1_OC2PE | TIM_CCMR1_OC2CE);
+	TIM1->CCMR1 |= (TIM_CCMR1_OC2M_2 | TIM_CCMR1_OC2M_1 | TIM_CCMR1_OC2PE);
+
+	TIM1->CCER |= TIM_CCER_CC1E | TIM_CCER_CC2E;
+
+	TIM1->CCR1 = 500;
+	TIM1->CCR2 = 200;
+
+	TIM1->CR1 |= TIM_CR1_ARPE;
+	TIM1->EGR |= TIM_EGR_UG;
+
+	TIM1->BDTR |= TIM_BDTR_MOE;
+	TIM1->CR1 |= TIM_CR1_CEN;
+
+}
+
+void init_tim2_as_pwm() { // pb10 pb11
+	RCC->AHBENR |= RCC_AHBENR_GPIOBEN;
+	RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
+	RCC->APB1RSTR |= RCC_APB1RSTR_TIM2RST;
+	RCC->APB1RSTR &= ~RCC_APB1RSTR_TIM2RST;
+
+	GPIOB->MODER &= ~(GPIO_MODER_MODER10 | GPIO_MODER_MODER11);
+	GPIOB->MODER |= (GPIO_MODER_MODER10_1 | GPIO_MODER_MODER11_1);
+
+	GPIOB->AFR[1] &= ~((0xF << 8) | (0xF << 12));
+	GPIOB->AFR[1] |= (0x1 << 8) | (0x1 << 12);
+
+	TIM2->PSC = 31;
+	TIM2->ARR = 999;
+
+	uint32_t ccmr2 = TIM2->CCMR2;
+	ccmr2 &= ~(TIM_CCMR2_CC3S | TIM_CCMR2_OC3M | TIM_CCMR2_OC3PE | TIM_CCMR2_CC4S | TIM_CCMR2_OC4M | TIM_CCMR2_OC4PE);
+	ccmr2 |= (TIM_CCMR2_OC3M_1 | TIM_CCMR2_OC3M_2 | TIM_CCMR2_OC3PE);
+	ccmr2 |= (TIM_CCMR2_OC4M_1 | TIM_CCMR2_OC4M_2 | TIM_CCMR2_OC4PE);
+	TIM2->CCMR2 = ccmr2;
+
+	TIM2->CCER |= TIM_CCER_CC3E | TIM_CCER_CC4E;
+
+	TIM2->CCR3 = 500;
+	TIM2->CCR4 = 200;
+
+	TIM2->CR1 |= TIM_CR1_ARPE;
+	TIM2->EGR |= TIM_EGR_UG;
+
+	TIM2->CR1 |= TIM_CR1_CEN;
+}
+
+void init_tim3_as_pwm() { // PA6 (CH1), PA7 (CH2)
+	RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
+	GPIOA->MODER |= GPIO_MODER_MODER6_1 | GPIO_MODER_MODER7_1;
+	GPIOA->AFR[0] |= SET_AF(6, 0x2) | SET_AF(7, 0x2);
+
+	RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
+
+	TIM3->PSC = 31;
+	TIM3->ARR = 999;
+
+	// Настройка CH1
+	TIM3->CCMR1 &= ~TIM_CCMR1_CC1S;
+	TIM3->CCMR1 |= TIM_CCMR1_OC1M_1 | TIM_CCMR1_OC1M_2;
+	TIM3->CCMR1 |= TIM_CCMR1_OC1PE;
+
+	// Настройка CH2
+	TIM3->CCMR1 &= ~TIM_CCMR1_CC2S;
+	TIM3->CCMR1 |= TIM_CCMR1_OC2M_1 | TIM_CCMR1_OC2M_2;
+	TIM3->CCMR1 |= TIM_CCMR1_OC2PE;
+
+	TIM3->CCER |= TIM_CCER_CC1E | TIM_CCER_CC2E;
+
+	TIM3->CCR1 = 500;
+	TIM3->CCR2 = 200;
+
+	TIM3->CR1 |= TIM_CR1_ARPE;
+	TIM3->EGR |= TIM_EGR_UG;
+	TIM3->CR1 |= TIM_CR1_CEN;
 }
 
 void set_pwm_freq(uint8_t timer_number, uint32_t freq_hz) {
@@ -632,38 +611,35 @@ void set_pwm_duty() {
 	}
 }
 
-void adc1_read_temp() {
-	ADC1->CR |= ADC_CR_ADSTART;
-	while (!(ADC1->ISR & ADC_ISR_EOC));
-	uint16_t raw = ADC1->DR;
+// Button
 
-	// float temp = ((1.43f - ((raw * 3.3f) / 4095.0f)) * 1000.0f / 4.3f) + 25.0f;
-	usart_tx_buffer[0] = raw & 0xFF;
-	usart_tx_buffer[1] = (raw >> 8) & 0xFF;
-	usart_dma_send(2);
+void init_pa5() {
+	RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
+	GPIOA->MODER &= ~GPIO_MODER_MODER5;
+	GPIOA->MODER |= GPIO_MODER_MODER5_0; // output
 }
 
-void adc1_init_temp_sensor() {
-	// Включить тактирование ADC и внутреннего датчика
-	RCC->AHBENR |= RCC_AHBENR_ADC12EN;
-	ADC1_2_COMMON->CCR |= ADC12_CCR_TSEN; // Температурный датчик включен
+void EXTI15_10_IRQHandler() {
+	if (EXTI->PR & EXTI_PR_PR13) {
+		EXTI->PR |= EXTI_PR_PR13;
+		click_processed = 0;
+	}
+}
 
-	// Отключить ADC1 перед калибровкой
-	ADC1->CR &= ~ADC_CR_ADEN;
-	ADC1->CR |= ADC_CR_ADCAL; // Запуск калибровки
-	while (ADC1->CR & ADC_CR_ADCAL); // Ждать завершения
+void init_button_pc13() {
+	RCC->AHBENR |= RCC_AHBENR_GPIOCEN;
+	GPIOC->MODER &= ~GPIO_MODER_MODER13;
+	GPIOC->PUPDR |= GPIO_PUPDR_PUPDR13_0; // pull up resistor
 
-	// Включить ADC1
-	ADC1->CR |= ADC_CR_ADEN;
-	while (!(ADC1->ISR & ADC_ISR_ADRD)); // Ждать готовности
+	EXTI->IMR |= EXTI_IMR_MR13;
+	EXTI->RTSR |= EXTI_FTSR_TR13;
 
-	// Настроить канал 16 (температурный датчик)
-	ADC1->SQR1 = (16 << 6); // Канал 16 в первый слот
+	RCC->APB2ENR |= RCC_APB2ENR_SYSCFGEN;
+	SYSCFG->EXTICR[3] &= ~(SYSCFG_EXTICR4_EXTI13);
+	SYSCFG->EXTICR[3] |= SYSCFG_EXTICR4_EXTI13_PC;
 
-	// Максимальное время выборки для канала 16
-	ADC1->SMPR1 |= (7 << 18);
-
-	ADC1->CFGR &= ~ADC_CFGR_CONT; // Одиночное преобразование
+	NVIC_SetPriority(EXTI15_10_IRQn, 0);
+	NVIC_EnableIRQ(EXTI15_10_IRQn);
 }
 
 void btn_process() {

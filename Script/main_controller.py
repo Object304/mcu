@@ -5,7 +5,7 @@ import subprocess
 import datetime
 
 ser = serial.Serial(
-    port='COM3',  # Укажи нужный порт
+    port='COM3',
     baudrate=921600,
     bytesize=serial.EIGHTBITS,
     parity=serial.PARITY_NONE,
