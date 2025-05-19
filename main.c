@@ -39,7 +39,7 @@
 //					2 - tim2
 //					3 - tim3
 //
-//03 01 00 00 20 00		03 02 00 00 30 00		03 03 00 00 40 00 - 16384 Hz
+//03 01 00 00 20 00 - 8192		03 02 00 00 30 00 - 12288		03 03 00 00 40 00 - 16384 Hz
 //
 //0x04 - set duty %, data:
 //0	x	0			0		0 0
@@ -385,60 +385,83 @@ void adc_start_cycle(uint16_t n_per_cycle) {
 #define SET_AF(num_pin, num_af) (num_af << (num_pin * 4))
 
 void init_tim1_as_pwm() { // pa8 pa9
-	RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
-	GPIOA->MODER |= GPIO_MODER_MODER8_1 | GPIO_MODER_MODER9_1;
-	GPIOA->AFR[1] |= SET_AF(8 - 8, 0x6) | SET_AF(9 - 8, 0x6);
+	// Очистка и установка MODER:
+	GPIOA->MODER &= ~(GPIO_MODER_MODER8 | GPIO_MODER_MODER9);
+	GPIOA->MODER |= (GPIO_MODER_MODER8_1 | GPIO_MODER_MODER9_1);
+
+	// Очистка AFR:
+	GPIOA->AFR[1] &= ~((0xF << 0) | (0xF << 4));
+	GPIOA->AFR[1] |= (0x6 << 0) | (0x6 << 4);
+
+	// Включение таймера и сброс:
+	RCC->APB2RSTR |= RCC_APB2RSTR_TIM1RST;
+	RCC->APB2RSTR &= ~RCC_APB2RSTR_TIM1RST;
 
 	RCC->APB2ENR |= RCC_APB2ENR_TIM1EN;
 
-	TIM1->ARR = 999;
 	TIM1->PSC = 31;
+	TIM1->ARR = 999;
 
-	TIM1->CCMR1 &= ~TIM_CCMR1_CC1S;
-	TIM1->CCMR1 |= TIM_CCMR1_OC1M_2 | TIM_CCMR1_OC1M_1; // pwm mode 1
-	TIM1->CCMR1 |= TIM_CCMR1_OC1CE;
+	TIM1->CCMR1 &= ~(TIM_CCMR1_CC1S | TIM_CCMR1_OC1M | TIM_CCMR1_OC1PE | TIM_CCMR1_OC1CE);
+	TIM1->CCMR1 |= (TIM_CCMR1_OC1M_2 | TIM_CCMR1_OC1M_1 | TIM_CCMR1_OC1PE);
 
-	TIM1->CCMR1 &= ~TIM_CCMR1_CC2S;
-	TIM1->CCMR1 |= TIM_CCMR1_OC2M_2 | TIM_CCMR1_OC2M_1; // pwm mode 1
-	TIM1->CCMR1 |= TIM_CCMR1_OC2CE;
+	TIM1->CCMR1 &= ~(TIM_CCMR1_CC2S | TIM_CCMR1_OC2M | TIM_CCMR1_OC2PE | TIM_CCMR1_OC2CE);
+	TIM1->CCMR1 |= (TIM_CCMR1_OC2M_2 | TIM_CCMR1_OC2M_1 | TIM_CCMR1_OC2PE);
 
 	TIM1->CCER |= TIM_CCER_CC1E | TIM_CCER_CC2E;
 
-	TIM1->CR1 |= TIM_CR1_ARPE;
 	TIM1->CCR1 = 500;
 	TIM1->CCR2 = 200;
+
+	TIM1->CR1 |= TIM_CR1_ARPE;
 	TIM1->EGR |= TIM_EGR_UG;
 
 	TIM1->BDTR |= TIM_BDTR_MOE;
 	TIM1->CR1 |= TIM_CR1_CEN;
+
 }
 
 void init_tim2_as_pwm() { // pb10 pb11
+	// Включаем тактирование GPIOB и TIM2
 	RCC->AHBENR |= RCC_AHBENR_GPIOBEN;
-	GPIOB->MODER |= GPIO_MODER_MODER10_1 | GPIO_MODER_MODER11_1;
-	GPIOB->AFR[1] |= SET_AF(10 - 8, 0x1) | SET_AF(11 - 8, 0x1);
-
 	RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
+	RCC->APB1RSTR |= RCC_APB1RSTR_TIM2RST;
+	RCC->APB1RSTR &= ~RCC_APB1RSTR_TIM2RST;
 
-	TIM2->ARR = 999;
+	// Настраиваем GPIOB 10 и 11 в AF mode
+	GPIOB->MODER &= ~(GPIO_MODER_MODER10 | GPIO_MODER_MODER11);
+	GPIOB->MODER |= (GPIO_MODER_MODER10_1 | GPIO_MODER_MODER11_1);
+
+	// Настраиваем AF1 для PB10, PB11
+	GPIOB->AFR[1] &= ~((0xF << 8) | (0xF << 12));
+	GPIOB->AFR[1] |= (0x1 << 8) | (0x1 << 12);
+
+	// Настройка таймера
 	TIM2->PSC = 31;
+	TIM2->ARR = 999;
 
-	TIM2->CCMR2 &= ~TIM_CCMR2_CC3S;
-	TIM2->CCMR2 |= TIM_CCMR2_OC3M_1 | TIM_CCMR2_OC3M_2; // PWM mode 1
-	TIM2->CCMR2 |= TIM_CCMR2_OC3PE; // preload
+	// Устанавливаем режим PWM для каналов 3 и 4 без "стирания" установленных битов
+	uint32_t ccmr2 = TIM2->CCMR2;
+	ccmr2 &= ~(TIM_CCMR2_CC3S | TIM_CCMR2_OC3M | TIM_CCMR2_OC3PE | TIM_CCMR2_CC4S | TIM_CCMR2_OC4M | TIM_CCMR2_OC4PE);
+	ccmr2 |= (TIM_CCMR2_OC3M_1 | TIM_CCMR2_OC3M_2 | TIM_CCMR2_OC3PE);
+	ccmr2 |= (TIM_CCMR2_OC4M_1 | TIM_CCMR2_OC4M_2 | TIM_CCMR2_OC4PE);
+	TIM2->CCMR2 = ccmr2;
 
-	TIM2->CCMR2 &= ~TIM_CCMR2_CC4S;
-	TIM2->CCMR2 |= TIM_CCMR2_OC4M_1 | TIM_CCMR2_OC4M_2; // PWM mode 1
-	TIM2->CCMR2 |= TIM_CCMR2_OC4PE; // preload
-
+	// Включаем выходы каналов 3 и 4
 	TIM2->CCER |= TIM_CCER_CC3E | TIM_CCER_CC4E;
 
-	TIM2->CR1 |= TIM_CR1_ARPE;
+	// Задаём скважность
 	TIM2->CCR3 = 500;
 	TIM2->CCR4 = 200;
+
+	// Разрешаем автоперезагрузку и обновляем
+	TIM2->CR1 |= TIM_CR1_ARPE;
 	TIM2->EGR |= TIM_EGR_UG;
 
+	// Включаем таймер
 	TIM2->CR1 |= TIM_CR1_CEN;
+
+
 }
 
 void init_tim3_as_pwm() { // PA6 (CH1), PA7 (CH2)
