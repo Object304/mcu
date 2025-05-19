@@ -294,19 +294,36 @@ void adc_set_sampling_time(uint8_t smp_bits) {
 }
 
 void stop_adc_dma() {
-	// Остановка АЦП
-	if (ADC1->CR & ADC_CR_ADEN) {
-		ADC1->CR |= ADC_CR_ADDIS;                  // запросить отключение
-		while (ADC1->CR & ADC_CR_ADEN);            // подождать, пока отключится
-	}
+//	// Остановка АЦП
+//	if (ADC1->CR & ADC_CR_ADEN) {
+//		ADC1->CR |= ADC_CR_ADDIS;                  // запросить отключение
+//		while (ADC1->CR & ADC_CR_ADEN);            // подождать, пока отключится
+//	}
+//
+//	// Остановка DMA
+//	DMA1_Channel1->CCR &= ~DMA_CCR_EN;
+//
+//	ADC1->CFGR = 0;
+//	ADC1->SQR1 = 0;
+//	ADC1->SQR2 = 0;
+//	ADC1->SQR3 = 0;
+//	ADC1->SQR4 = 0;
+//	ADC1->SMPR1 = 0;
+//	ADC1->SMPR2 = 0;
+//	ADC1->ISR = ADC_ISR_EOC | ADC_ISR_EOS | ADC_ISR_OVR;  // очистить флаги
 
-	// Остановка DMA
+	RCC->AHBRSTR |= RCC_AHBRSTR_ADC12RST;
+	RCC->AHBRSTR &= ~RCC_AHBRSTR_ADC12RST;
+
 	DMA1_Channel1->CCR &= ~DMA_CCR_EN;
+	DMA1_Channel1->CCR = 0;
+	DMA1_Channel1->CNDTR = 0;
+	DMA1_Channel1->CPAR = 0;
+	DMA1_Channel1->CMAR = 0;
 }
 
 
 void adc_start_burst(uint16_t n_total_samples) {
-	stop_adc_dma();
 	uint16_t dma_count = n_total_samples * num_channels;
 	if (dma_count > ADC_BUF_SIZE) dma_count = ADC_BUF_SIZE;
 
@@ -346,7 +363,6 @@ void adc_start_burst(uint16_t n_total_samples) {
 }
 
 void adc_start_cycle(uint16_t n_per_cycle) {
-	stop_adc_dma();
 	uint16_t dma_count = n_per_cycle * num_channels;
 	if (dma_count > ADC_BUF_SIZE) dma_count = ADC_BUF_SIZE;
 
@@ -627,6 +643,29 @@ void adc1_read_temp() {
 	usart_dma_send(2);
 }
 
+void adc1_init_temp_sensor() {
+	// Включить тактирование ADC и внутреннего датчика
+	RCC->AHBENR |= RCC_AHBENR_ADC12EN;
+	ADC1_2_COMMON->CCR |= ADC12_CCR_TSEN; // Температурный датчик включен
+
+	// Отключить ADC1 перед калибровкой
+	ADC1->CR &= ~ADC_CR_ADEN;
+	ADC1->CR |= ADC_CR_ADCAL; // Запуск калибровки
+	while (ADC1->CR & ADC_CR_ADCAL); // Ждать завершения
+
+	// Включить ADC1
+	ADC1->CR |= ADC_CR_ADEN;
+	while (!(ADC1->ISR & ADC_ISR_ADRD)); // Ждать готовности
+
+	// Настроить канал 16 (температурный датчик)
+	ADC1->SQR1 = (16 << 6); // Канал 16 в первый слот
+
+	// Максимальное время выборки для канала 16
+	ADC1->SMPR1 |= (7 << 18);
+
+	ADC1->CFGR &= ~ADC_CFGR_CONT; // Одиночное преобразование
+}
+
 void btn_process() {
 	if (GPIOC->IDR & GPIO_IDR_13 || click_processed) return;
 	for (uint8_t i = 0; i < 30; i++);
@@ -636,6 +675,7 @@ void btn_process() {
 	uint16_t rx_data_tail_temp = rx_data_tail;
 	switch (cmd) {
 		case 0x00:
+			stop_adc_dma();
 			adc_start();
 			break;
 		case 0x01:
@@ -661,33 +701,12 @@ void btn_process() {
 			set_pwm_duty();
 			break;
 		case 0x05:
+			stop_adc_dma();
+			adc1_init_temp_sensor();
 			adc1_read_temp();
 			break;
 	}
 	rx_data_tail = rx_data_tail_temp;
-}
-
-void adc1_init_temp_sensor() {
-	// Включить тактирование ADC и внутреннего датчика
-	RCC->AHBENR |= RCC_AHBENR_ADC12EN;
-	ADC1_2_COMMON->CCR |= ADC12_CCR_TSEN; // Температурный датчик включен
-
-	// Отключить ADC1 перед калибровкой
-	ADC1->CR &= ~ADC_CR_ADEN;
-	ADC1->CR |= ADC_CR_ADCAL; // Запуск калибровки
-	while (ADC1->CR & ADC_CR_ADCAL); // Ждать завершения
-
-	// Включить ADC1
-	ADC1->CR |= ADC_CR_ADEN;
-	while (!(ADC1->ISR & ADC_ISR_ADRD)); // Ждать готовности
-
-	// Настроить канал 16 (температурный датчик)
-	ADC1->SQR1 = (16 << 6); // Канал 16 в первый слот
-
-	// Максимальное время выборки для канала 16
-	ADC1->SMPR1 |= (7 << 18);
-
-	ADC1->CFGR &= ~ADC_CFGR_CONT; // Одиночное преобразование
 }
 
 int main(void)
@@ -696,7 +715,6 @@ int main(void)
 	init_usart_dma_tx();
 	init_pa5();
 	init_button_pc13();
-	adc1_init_temp_sensor();
 	init_tim1_as_pwm();
 	init_tim2_as_pwm();
 	init_tim3_as_pwm();
