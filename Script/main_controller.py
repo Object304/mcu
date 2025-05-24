@@ -1,6 +1,5 @@
 import serial
 import threading
-import os
 import subprocess
 import datetime
 
@@ -53,22 +52,23 @@ def build_command(cmd_str, data_strs):
         print("Ошибка: неверный формат байтов (ожидается формат '00')")
         return None, None
 
-    weight = 0x01 if len(data) >= 128 else 0x00
+    # Дополнение нулями до 5 байт
+    while len(data) < 5:
+        data.append(0x00)
+    data = data[:5]
 
     now = datetime.datetime.now()
     time1 = now.minute
     time2 = now.second
 
-    command = [0xAA, weight, cmd, time1, time2] + data
+    packet = [0xAA, cmd, time1, time2] + data
 
     xor_val = 0
-    for b in command:
+    for b in packet:
         xor_val ^= b
+    packet.append(xor_val)
 
-    command.append(xor_val)
-    command.append(0xC0)
-
-    return bytes(command), cmd
+    return bytes(packet), cmd
 
 def send_to_viewer_control(cmd):
     with open("viewer_control.txt", "w") as f:
