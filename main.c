@@ -51,6 +51,11 @@
 //Temp
 //
 //0x05 - send temp
+//
+//Big data
+//
+//0x06 - big data transmit started
+//0x07 - big data transmit ended
 
 #include "stm32f3xx.h"
 #include "ADC.h"

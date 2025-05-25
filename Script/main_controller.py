@@ -15,6 +15,7 @@ output_file = "adc_output.txt"
 reading = True
 running = True
 convert_to_temp = False
+big_data_mode = False
 
 viewer_proc = subprocess.Popen(
     ["python", "viewer.py"],
@@ -75,7 +76,7 @@ def send_to_viewer_control(cmd):
         f.write(cmd)
 
 def main():
-    global running, reading, convert_to_temp
+    global running, reading, convert_to_temp, big_data_mode
     threading.Thread(target=read_from_serial, daemon=True).start()
 
     print("Команды:")
@@ -87,10 +88,14 @@ def main():
     print("  refresh          — обновить viewer вручную")
     print("  refresh_en       — включить автообновление viewer")
     print("  refresh_dis      — отключить автообновление viewer")
+    print("  big_data_dis     — отключить режим передачи большого объёма данных")
 
     while True:
         try:
             user_input = input("> ").strip()
+
+            if not user_input:
+                continue
 
             if user_input.lower() == "stop":
                 reading = False
@@ -106,17 +111,33 @@ def main():
                 break
             elif user_input.lower() in ("refresh", "refresh_en", "refresh_dis"):
                 send_to_viewer_control(user_input.lower())
+            elif user_input.lower() == "big_data_dis":
+                big_data_mode = False
+                print("Режим передачи большого объёма данных отключён.")
             else:
                 tokens = user_input.split()
                 if not tokens:
                     continue
-                cmd_str = tokens[0]
-                data = tokens[1:] if len(tokens) > 1 else []
-                packet, cmd_val = build_command(cmd_str, data)
-                if packet:
-                    convert_to_temp = (cmd_val == 0x05)
-                    ser.write(packet)
-                    print(f"Отправлено: {[hex(b) for b in packet]}")
+
+                if big_data_mode:
+                    # Отправляем все байты как есть
+                    try:
+                        raw_bytes = bytes(int(t, 16) for t in tokens)
+                        ser.write(raw_bytes)
+                        print(f"Отправлено: {[hex(b) for b in raw_bytes]}")
+                    except ValueError:
+                        print("Ошибка: в big_data_mode можно вводить только байты в формате hex")
+                else:
+                    cmd_str = tokens[0]
+                    data = tokens[1:] if len(tokens) > 1 else []
+                    packet, cmd_val = build_command(cmd_str, data)
+                    if packet:
+                        if cmd_val == 0x06:
+                            big_data_mode = True
+                            print("Передача большого объёма данных началась.")
+                        convert_to_temp = (cmd_val == 0x05)
+                        ser.write(packet)
+                        print(f"Отправлено: {[hex(b) for b in packet]}")
         except Exception as e:
             print(f"Ошибка: {e}")
             break

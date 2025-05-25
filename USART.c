@@ -11,11 +11,12 @@ volatile uint8_t dma_tx_busy = 0;
 volatile uint8_t sync_byte_received = 0;
 volatile uint8_t byte_counter = 0;
 
+volatile uint8_t big_data = 0;
+
 // USART receive
 
 int process_command() {
 	if (byte_counter < 10) return 1; // команда не сформирована
-	init_buffer(&command_data_buf);
 	uint8_t byte;
 	uint8_t sync;
 	uint8_t time1;
@@ -25,14 +26,26 @@ int process_command() {
 	get_from_tail(&time1, &command_buf);
 	get_from_tail(&time2, &command_buf);
 	uint8_t xor = sync ^ cmd ^ time1 ^ time2;
+	uint8_t temp_data_buf[5];
 	for (uint8_t i = 0; i < 5; i++) {
 		get_from_tail(&byte, &command_buf);
-		add_to_end(byte, &command_data_buf);
+		temp_data_buf[i] = byte;
 		xor ^= byte;
 	}
 	get_from_tail(&byte, &command_buf);
 	if ((xor ^ byte) != 0) {
 		return 2; // данные повреждены
+	}
+
+	if (cmd == 0x06) {
+		big_data = 1;
+		init_buffer(&command_data_buf);
+	}
+	else if (cmd == 0x07)
+		big_data = 0; // no init
+	else {
+		init_buffer(&command_data_buf);
+		for (uint8_t i = 0; i < 5; i++) add_to_end(temp_data_buf[i], &command_data_buf);
 	}
 	sync_byte_received = 0;
 	byte_counter = 0;
@@ -44,6 +57,11 @@ void USART2_IRQHandler() {
 		uint8_t byte = USART2->RDR;
 		add_to_end(byte, &rx_buf);
 		if (byte == 0xAA) sync_byte_received = 1;
+
+		if (big_data && !sync_byte_received) {
+			add_to_end(byte, &command_data_buf);
+		}
+
 		if (sync_byte_received) {
 			byte_counter++;
 			add_to_end(byte, &command_buf);
