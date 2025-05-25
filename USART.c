@@ -15,6 +15,7 @@ volatile uint8_t byte_counter = 0;
 
 int process_command() {
 	if (byte_counter < 10) return 1; // команда не сформирована
+	init_buffer(&command_data_buf);
 	uint8_t byte;
 	uint8_t sync;
 	uint8_t time1;
@@ -53,7 +54,7 @@ void USART2_IRQHandler() {
 // USART transmit
 
 void prepare_usart_tx_buffer(uint16_t start, uint16_t length) {
-	GPIOA->ODR |= GPIO_ODR_5;
+//	GPIOA->ODR |= GPIO_ODR_5;
 	for (uint16_t i = 0; i < length; ++i) {
 		uint16_t value = dma_data[start + i];
 		usart_tx_buffer[2*i]     = value & 0xFF;        // LSB (LSB first)
@@ -99,14 +100,26 @@ void init_usart_dma_tx() {
 void init_pll_usart() {
 	//init clock as pll
 	RCC->CR &= ~RCC_CR_PLLON;
-	while((RCC->CR & RCC_CR_PLLRDY) == RCC_CR_PLLRDY);
+
+	uint32_t timeout = SystemCoreClock;
+	while((RCC->CR & RCC_CR_PLLRDY) == RCC_CR_PLLRDY && timeout--);
+	if (timeout == 0) NVIC_SystemReset();
+
 	RCC->CFGR |= RCC_CFGR_PLLSRC_HSI_DIV2;	// 8MHz / 2 = 4MHz
 	RCC->CFGR |= RCC_CFGR_PLLMUL8;	// 4Mhz * 8 = 32MHz
 	RCC->CR |= RCC_CR_PLLON;
-	while((RCC->CR & RCC_CR_PLLRDY) != RCC_CR_PLLRDY);
+
+	timeout = SystemCoreClock;
+	while((RCC->CR & RCC_CR_PLLRDY) != RCC_CR_PLLRDY && timeout--);
+	if (timeout == 0) NVIC_SystemReset();
+
 	RCC->CFGR2 |= RCC_CFGR2_ADCPRE12_DIV256; //clock for adc12 is on
 	RCC->CFGR |= RCC_CFGR_SW_PLL; // set pll as main clock
-	while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_PLL);
+
+	timeout = SystemCoreClock;
+	while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_PLL && timeout--);
+	if (timeout == 0) NVIC_SystemReset();
+
 	SystemCoreClockUpdate();
 
 	//init usart

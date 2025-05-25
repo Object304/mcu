@@ -99,7 +99,6 @@ void btn_process() {
 	uint16_t rx_data_tail_temp = command_data_buf.tail;
 	switch (cmd) {
 		case 0x00:
-			stop_adc_dma();
 			adc_start();
 			break;
 		case 0x01:
@@ -115,9 +114,7 @@ void btn_process() {
 			set_pwm_duty();
 			break;
 		case 0x05:
-			stop_adc_dma();
-			adc1_init_temp_sensor();
-			adc1_read_temp();
+			adc_read_temp();
 			break;
 	}
 	command_data_buf.tail = rx_data_tail_temp;
@@ -135,10 +132,12 @@ int main(void)
 	init_buffer(&rx_buf);
 	init_buffer(&command_buf);
 	init_buffer(&command_data_buf);
+	init_adc_dma();
 	while(1) {
 		data_convert();
 		process_command();
 		btn_process();
+
 	}
 	return 0;
 }

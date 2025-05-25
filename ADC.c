@@ -55,53 +55,27 @@ void adc_set_sampling_time(uint8_t smp_bits) {
 		(smp_bits << 27);  // SMP9
 }
 
-void stop_adc_dma() {
-	RCC->AHBRSTR |= RCC_AHBRSTR_ADC12RST;
-	RCC->AHBRSTR &= ~RCC_AHBRSTR_ADC12RST;
-
-	DMA1_Channel1->CCR &= ~DMA_CCR_EN;
-	DMA1_Channel1->CCR = 0;
-	DMA1_Channel1->CNDTR = 0;
-	DMA1_Channel1->CPAR = 0;
-	DMA1_Channel1->CMAR = 0;
-}
-
-
 void adc_start_burst(uint16_t n_total_samples) {
 	uint16_t dma_count = n_total_samples * num_channels;
 	if (dma_count > ADC_BUF_SIZE) dma_count = ADC_BUF_SIZE;
-
 	samples_count = dma_count;
-
 	// Настройка DMA
 	DMA1_Channel1->CCR &= ~DMA_CCR_EN;
-	RCC->AHBENR |= RCC_AHBENR_DMA1EN;
-	DMA1_Channel1->CMAR = (uint32_t)dma_data;
-	DMA1_Channel1->CPAR = (uint32_t)&ADC1->DR;
 	DMA1_Channel1->CNDTR = samples_count;
-	DMA1_Channel1->CCR = DMA_CCR_MINC |
-						 DMA_CCR_MSIZE_0 |
-						 DMA_CCR_PSIZE_0 |
-						 DMA_CCR_TCIE;
-	NVIC_SetPriority(DMA1_Channel1_IRQn, 0);
-	NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+	DMA1_Channel1->CCR &= ~DMA_CCR_CIRC;
 	DMA1_Channel1->CCR |= DMA_CCR_EN;
 
-
 	// Настройка ADC
-	RCC->AHBENR |= RCC_AHBENR_ADC12EN;
-	ADC1->CR &= ~ADC_CR_ADVREGEN_1;
-	ADC1->CR |= ADC_CR_ADVREGEN_0;
 	ADC1->CFGR &= ~ADC_CFGR_CONT;
-	ADC1->CFGR |= ADC_CFGR_DMAEN | ADC_CFGR_OVRMOD;
-
 	ADC1->CR |= ADC_CR_ADEN;
-	while (!(ADC1->ISR & ADC_ISR_ADRD));
-
+	for (uint16_t i = 0; i < 1000; i++);
+	if (ADC1->ISR & ADC_ISR_ADRD) GPIOA->ODR |= GPIO_ODR_5;
 	for (uint16_t i = 0; i < n_total_samples; i++) {
-		while (ADC1->CR & ADC_CR_ADSTART);
 		ADC1->CR |= ADC_CR_ADSTART;
-		while (!(ADC1->ISR & ADC_ISR_EOS)); // дождаться окончания
+
+		uint32_t timeout = SystemCoreClock;
+		while (!(ADC1->ISR & ADC_ISR_EOS) && timeout--);
+		if (timeout == 0) NVIC_SystemReset();
 		ADC1->ISR |= ADC_ISR_EOS;
 	}
 }
@@ -109,82 +83,75 @@ void adc_start_burst(uint16_t n_total_samples) {
 void adc_start_cycle(uint16_t n_per_cycle) {
 	uint16_t dma_count = n_per_cycle * num_channels;
 	if (dma_count > ADC_BUF_SIZE) dma_count = ADC_BUF_SIZE;
-
 	samples_count = dma_count;
 	// Настройка DMA
 	DMA1_Channel1->CCR &= ~DMA_CCR_EN;
-	RCC->AHBENR |= RCC_AHBENR_DMA1EN;
-
-	DMA1_Channel1->CMAR = (uint32_t)dma_data;
-	DMA1_Channel1->CPAR = (uint32_t)&ADC1->DR;
 	DMA1_Channel1->CNDTR = samples_count;
-
-	DMA1_Channel1->CCR = DMA_CCR_MINC
-					   | DMA_CCR_CIRC
-					   | DMA_CCR_TCIE
-					   | DMA_CCR_MSIZE_0
-					   | DMA_CCR_PSIZE_0;
-
-	NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+	DMA1_Channel1->CCR |= DMA_CCR_CIRC;
 	DMA1_Channel1->CCR |= DMA_CCR_EN;
 
 	// Настройка ADC
-	RCC->AHBENR |= RCC_AHBENR_ADC12EN;
-
-	if (ADC1->CR & ADC_CR_ADEN) {
-		ADC1->CR |= ADC_CR_ADDIS;
-		while (ADC1->CR & ADC_CR_ADEN);
-	}
-
-	ADC1->CR &= ~ADC_CR_ADVREGEN_1;
-	ADC1->CR |= ADC_CR_ADVREGEN_0;
-	for (uint16_t i = 0; i < 1000; i++);
-
-	ADC1->CR |= ADC_CR_ADCAL;
-	while (ADC1->CR & ADC_CR_ADCAL);
-
-	ADC1->CFGR &= ~(ADC_CFGR_CONT | ADC_CFGR_DMAEN | ADC_CFGR_DMACFG);
-	ADC1->CFGR |= ADC_CFGR_DMAEN
-				| ADC_CFGR_DMACFG
-				| ADC_CFGR_CONT
-				| ADC_CFGR_OVRMOD;
-
+	ADC1->CFGR |= ADC_CFGR_CONT;
 	ADC1->CR |= ADC_CR_ADEN;
-	while (!(ADC1->ISR & ADC_ISR_ADRD));
+	for (uint16_t i = 0; i < 1000; i++);
+	if (ADC1->ISR & ADC_ISR_ADRD) GPIOA->ODR |= GPIO_ODR_5;
 	ADC1->CR |= ADC_CR_ADSTART;
 }
 
-void adc1_read_temp() {
-	ADC1->CR |= ADC_CR_ADSTART;
-	while (!(ADC1->ISR & ADC_ISR_EOC));
-	uint16_t raw = ADC1->DR;
+void adc_read_temp() {
+	DMA1_Channel1->CCR &= ~DMA_CCR_EN;
+	ADC1->CR |= ADC_CR_ADSTP;
+	ADC1->CR |= ADC_CR_ADDIS;
 
+	ADC1->SQR1 = (16 << 6); // Канал 16 в первый слот
+	ADC1->SMPR1 |= (7 << 18);
+	ADC1->CFGR &= ~ADC_CFGR_CONT;
+
+	ADC1->CR |= ADC_CR_ADEN;
+	for (uint16_t i = 0; i < 1000; i++);
+	ADC1->CR |= ADC_CR_ADSTART;
+
+	uint32_t timeout = SystemCoreClock;
+	while (!(ADC1->ISR & ADC_ISR_EOS) && timeout--);
+	if (timeout == 0) NVIC_SystemReset();
+
+	uint16_t raw = ADC1->DR;
 	// float temp = ((1.43f - ((raw * 3.3f) / 4095.0f)) * 1000.0f / 4.3f) + 25.0f;
 	usart_tx_buffer[0] = raw & 0xFF;
 	usart_tx_buffer[1] = (raw >> 8) & 0xFF;
 	usart_dma_send(2);
 }
 
-void adc1_init_temp_sensor() {
+//void ADC1_IRQHandler() {
+//	if (ADC1->ISR & ADC_ISR_ADRD) {
+//
+//	}
+//}
+
+void init_adc_dma() {
+	DMA1_Channel1->CCR &= ~DMA_CCR_EN;
+	RCC->AHBENR |= RCC_AHBENR_DMA1EN;
+	DMA1_Channel1->CMAR = (uint32_t)dma_data;
+	DMA1_Channel1->CPAR = (uint32_t)&ADC1->DR;
+	DMA1_Channel1->CCR = DMA_CCR_MINC
+					   | DMA_CCR_TCIE
+					   | DMA_CCR_MSIZE_0
+					   | DMA_CCR_PSIZE_0;
+	NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+
 	RCC->AHBENR |= RCC_AHBENR_ADC12EN;
 	ADC1_2_COMMON->CCR |= ADC12_CCR_TSEN; // Температурный датчик включен
-
-	ADC1->CR &= ~ADC_CR_ADEN;
-	ADC1->CR |= ADC_CR_ADCAL;
-	while (ADC1->CR & ADC_CR_ADCAL);
-
-	ADC1->CR |= ADC_CR_ADEN;
-	while (!(ADC1->ISR & ADC_ISR_ADRD));
-
-	ADC1->SQR1 = (16 << 6); // Канал 16 в первый слот
-
-	// Максимальное время выборки для канала 16
-	ADC1->SMPR1 |= (7 << 18);
-
-	ADC1->CFGR &= ~ADC_CFGR_CONT;
+	ADC1->CR |= ADC_CR_ADDIS;
+	ADC1->CR &= ~ADC_CR_ADVREGEN_1;
+	ADC1->CR |= ADC_CR_ADVREGEN_0;
+	ADC1->CFGR |= ADC_CFGR_DMAEN | ADC_CFGR_OVRMOD | ADC_CFGR_DMACFG;
 }
 
 void adc_start() {
+	DMA1_Channel1->CCR &= ~DMA_CCR_EN;
+	ADC1->CR |= ADC_CR_ADSTP;
+	ADC1->CR |= ADC_CR_ADDIS;
+
 	uint8_t byte;
 	get_from_tail(&byte, &command_data_buf);
 	uint8_t count = byte & 0x0F;
