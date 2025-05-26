@@ -20,5 +20,6 @@ void adc_on();
 void adc_set_channels();
 void adc_set_freq();
 void adc_set_size();
+void set_block_size();
 
 #endif /* ADC_H_ */

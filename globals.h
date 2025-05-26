@@ -25,4 +25,6 @@ extern volatile uint8_t cmd;
 
 extern volatile uint8_t command_ready;
 
+extern volatile uint8_t mode_type;
+
 #endif /* GLOBALS_H_ */

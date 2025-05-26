@@ -10,7 +10,6 @@
 volatile uint8_t dma_tx_busy = 0;
 volatile uint8_t sync_byte_received = 0;
 volatile uint8_t byte_counter = 0;
-
 volatile uint8_t big_data = 0;
 
 // USART receive
@@ -122,15 +121,16 @@ void init_pll_usart() {
 	while((RCC->CR & RCC_CR_PLLRDY) == RCC_CR_PLLRDY && timeout--);
 	if (timeout == 0) NVIC_SystemReset();
 
-	RCC->CFGR |= (1 << 15);	// 8MHz
-	RCC->CFGR |= RCC_CFGR_PLLMUL9;	// 8Mhz * 9 = 72MHz
+	RCC->CFGR |= RCC_CFGR_PLLSRC_HSI_DIV2;
+	RCC->CFGR |= RCC_CFGR_PLLMUL16;
+	FLASH->ACR |= FLASH_ACR_LATENCY_2;
 	RCC->CR |= RCC_CR_PLLON;
 
 	timeout = SystemCoreClock;
 	while((RCC->CR & RCC_CR_PLLRDY) != RCC_CR_PLLRDY && timeout--);
 	if (timeout == 0) NVIC_SystemReset();
 
-	RCC->CFGR2 |= RCC_CFGR2_ADCPRE12_DIV1; //clock for adc12 is on
+	RCC->CFGR2 |= RCC_CFGR2_ADCPRE12_DIV12; //clock for adc12 is on
 	RCC->CFGR |= RCC_CFGR_SW_PLL; // set pll as main clock
 
 	timeout = SystemCoreClock;
@@ -152,7 +152,47 @@ void init_pll_usart() {
 	USART2->CR1 |= USART_CR1_UE; // usart enable
 }
 
-void set_interval() {
-
+void init_tim3(uint16_t period_ms) {
+	RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
+	TIM3->PSC = (SystemCoreClock / 1000) - 1; // частота таймера 1 к√ц (1 мс)
+	TIM3->ARR = period_ms - 1;
+	TIM3->DIER |= TIM_DIER_UIE;
+	NVIC_EnableIRQ(TIM3_IRQn);
 }
 
+void start_tim3() {
+	TIM3->CNT = 0;
+	TIM3->CR1 |= TIM_CR1_CEN;
+}
+
+void stop_tim3() {
+	TIM3->CR1 &= ~TIM_CR1_CEN;
+}
+
+void TIM3_IRQHandler() {
+	if (TIM3->SR & TIM_SR_UIF) {
+		TIM3->SR &= ~TIM_SR_UIF;
+
+		if (data_ready) {
+			data_convert();
+		}
+	}
+}
+
+void set_interval() {
+	uint8_t byte;
+	get_from_tail(&byte, &command_data_buf);
+	mode_type = byte;
+	uint16_t interval_ms = 0;
+	get_from_tail(&byte, &command_data_buf);
+	interval_ms |= (byte << 8);
+	get_from_tail(&byte, &command_data_buf);
+	interval_ms |= byte;
+	if (mode_type == 0) {
+		stop_tim3();
+	}
+	else if (mode_type == 1) {
+		init_tim3(interval_ms);
+		start_tim3();
+	}
+}

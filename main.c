@@ -19,18 +19,37 @@
 //		pc0	pc1	pc2	pc3	count
 //		1 - on			1..4
 //		0 - off
+//02 81
+//
 //0x03 - set frequency
 //0	x	0 0 0 0 0 0 0 0
 //		frequency
+//03 00 00 00 01 - 1 Hz, 03 00 00 03 E8 - 1 kHz
+//
 //0x04 - set size
 //0	x	00 - 12 bit
 //		01 - 10 bit
 //		02 - 8 bit
 //		03 - 6 bit
-//0x05 - set interval
+//04 00
+//
+//0x05 - set interval ms
 //0	x	00 - if available
-//		01	0 0 0 0 0 0 0 0 - set interval
+//		01	0 0 0 0 - set interval
 //			interval
+//05 00 - available, 05 01 03 E8 - 1 sec
+//
+//0x08 - set block size
+//0	x	0 0 0 0
+//		block size
+//08 00 01 - 1, 08 00 80 - 128
+//
+//02 81
+//03 00 00 00 01
+//04 00
+//05 00
+//08 00 01
+//01
 
 #include "stm32f3xx.h"
 #include "ADC.h"
@@ -65,6 +84,9 @@ void command_execute() {
 		case 0x05:
 			set_interval();
 			break;
+		case 0x08:
+			set_block_size();
+			break;
 	}
 	command_data_buf.tail = rx_data_tail_temp;
 }
@@ -79,7 +101,9 @@ int main(void)
 	init_buffer(&command_data_buf);
 	init_adc_dma();
 	while(1) {
-		data_convert();
+		if (mode_type == 0) {
+			data_convert();
+		}
 		process_command();
 		if (command_ready) {
 			command_execute();

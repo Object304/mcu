@@ -30,11 +30,9 @@ void init_adc_dma() {
 					   | DMA_CCR_PSIZE_0
 					   | DMA_CCR_CIRC;
 	NVIC_EnableIRQ(DMA1_Channel1_IRQn);
-	DMA1_Channel1->CCR |= DMA_CCR_EN;
 
 	//adc
 	RCC->AHBENR |= RCC_AHBENR_ADC12EN;
-	ADC1->CR |= ADC_CR_ADDIS;
 	ADC1->CR &= ~ADC_CR_ADVREGEN_1;
 	ADC1->CR |= ADC_CR_ADVREGEN_0;
 	ADC1->CFGR |= ADC_CFGR_DMAEN | ADC_CFGR_OVRMOD | ADC_CFGR_DMACFG;
@@ -49,8 +47,9 @@ void adc_off() {
 }
 
 void adc_on() {
+	DMA1_Channel1->CCR |= DMA_CCR_EN;
 	ADC1->CR |= ADC_CR_ADEN;
-	for (uint16_t i = 0; i < 10000; i++);
+	for (volatile uint16_t i = 0; i < 10000; i++);
 	if (ADC1->ISR & ADC_ISR_ADRD) GPIOA->ODR |= GPIO_ODR_5;
 	ADC1->CR |= ADC_CR_ADSTART;
 }
@@ -113,4 +112,15 @@ void adc_set_size() {
 	byte &= 0b11;
 	ADC1->CFGR &= ~ADC_CFGR_RES;
 	ADC1->CFGR |= (byte << 3);
+}
+
+void set_block_size() {
+	uint8_t byte;
+	uint16_t block_size = 0;
+	get_from_tail(&byte, &command_data_buf);
+	block_size |= (byte << 8);
+	get_from_tail(&byte, &command_data_buf);
+	block_size |= byte;
+	DMA1_Channel1->CNDTR = block_size;
+	samples_count = block_size;
 }
