@@ -9,6 +9,8 @@
 //9 - data5
 //10 - xor
 //
+//Output pack: 1 - sync (0xAA); 2, 3 - data length; 4 - data; 5 - xor
+//
 //ADC
 //
 //0x00 - adc off

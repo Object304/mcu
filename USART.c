@@ -74,11 +74,18 @@ void USART2_IRQHandler() {
 // USART transmit
 
 void prepare_usart_tx_buffer(uint16_t start, uint16_t length) {
-	for (uint16_t i = 0; i < length; ++i) {
-		uint16_t value = dma_data[start + i];
-		usart_tx_buffer[2*i]     = value & 0xFF;        // LSB (LSB first)
-		usart_tx_buffer[2*i + 1] = (value >> 8) & 0xFF; // MSB
+	uint8_t xor = 0xAA ^ ((length >> 8) & 0xFF) ^ (length & 0xFF);
+	for (uint16_t i = 2; i < length + 2; ++i) {
+		uint16_t value = dma_data[start + i - 2];
+		usart_tx_buffer[2*i - 1]     = value & 0xFF; // LSB (LSB first)
+		usart_tx_buffer[2*i] = (value >> 8) & 0xFF; // MSB
+
+		xor ^= (value & 0xFF) ^ ((value >> 8) & 0xFF);
 	}
+	usart_tx_buffer[0] = 0xAA;
+	usart_tx_buffer[1] = (length & 0xFF); // LSB first
+	usart_tx_buffer[2] = ((length >> 8) & 0xFF);
+	usart_tx_buffer[length * 2 + 3] = xor;
 }
 
 void usart_dma_send(uint16_t length) {
@@ -90,7 +97,7 @@ void usart_dma_send(uint16_t length) {
 void data_convert() {
 	if (data_ready == 1) {
 		prepare_usart_tx_buffer(0, samples_count);
-		usart_dma_send(samples_count * 2);
+		usart_dma_send(samples_count * 2 + 4);
 		data_ready = 0;
 	}
 }

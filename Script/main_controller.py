@@ -27,23 +27,66 @@ def read_from_serial():
     with open(output_file, "w"):
         pass
     with open(output_file, "a") as f:
+        buffer = bytearray()
         while running:
             if reading:
                 try:
-                    lsb = ser.read(1)
-                    msb = ser.read(1)
-                    raw = int.from_bytes(lsb + msb, byteorder='little')
+                    byte = ser.read(1)
+                    if not byte:
+                        continue
+                    b = byte[0]
 
-                    if convert_to_temp:
-                        voltage = (raw * 3.3) / 4095.0
-                        temp = ((1.43 - voltage) * 1000.0 / 4.3) + 25.0
-                        f.write(f"{temp:.2f}\n")
-                    else:
-                        f.write(f"{raw}\n")
+                    # Поиск начала пакета
+                    if b != 0xAA:
+                        continue
 
+                    buffer = bytearray()
+                    buffer.append(b)
+
+                    # Чтение 2 байт длины (uint16_t)
+                    len_bytes = ser.read(2)
+                    if len(len_bytes) < 2:
+                        continue
+                    buffer.extend(len_bytes)
+                    num_values = int.from_bytes(len_bytes, byteorder='little')
+
+                    # Чтение данных (2 * N байт)
+                    data_bytes = ser.read(2 * num_values)
+                    if len(data_bytes) < 2 * num_values:
+                        continue
+                    buffer.extend(data_bytes)
+
+                    # Чтение XOR
+                    xor_byte = ser.read(1)
+                    if not xor_byte:
+                        continue
+                    buffer.append(xor_byte[0])
+
+                    # Проверка XOR
+                    xor = 0
+                    for b in buffer:
+                        xor ^= b
+                    if xor != 0:
+                        f.write("Данные повреждены.\n")
+                        f.flush()
+                        continue
+
+                    # Вывод данных
+                    for i in range(num_values):
+                        raw = int.from_bytes(data_bytes[i*2:i*2+2], byteorder='little')
+                        if convert_to_temp:
+                            voltage = (raw * 3.3) / 4095.0
+                            temp = ((1.43 - voltage) * 1000.0 / 4.3) + 25.0
+                            f.write(f"{temp:.2f}\n")
+                        else:
+                            f.write(f"{raw}\n")
                     f.flush()
-                except:
-                    break
+
+                except Exception as e:
+                    f.write(f"Ошибка чтения: {e}\n")
+                    f.flush()
+                    continue
+
 
 def build_command(cmd_str, data_strs):
     try:

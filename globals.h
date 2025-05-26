@@ -16,7 +16,7 @@ extern volatile uint8_t data_ready;
 
 #define ADC_BUF_SIZE 512
 extern volatile uint16_t dma_data[ADC_BUF_SIZE];
-extern volatile uint8_t usart_tx_buffer[ADC_BUF_SIZE * 2];
+extern volatile uint8_t usart_tx_buffer[ADC_BUF_SIZE * 2 + 4];
 
 extern volatile RingBuffer rx_buf;
 extern volatile RingBuffer command_buf;
