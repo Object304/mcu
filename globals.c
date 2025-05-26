@@ -16,3 +16,5 @@ volatile RingBuffer rx_buf;
 volatile RingBuffer command_buf;
 volatile RingBuffer command_data_buf;
 volatile uint8_t cmd = 0xFF;
+
+volatile uint8_t command_ready = 0;

@@ -21,6 +21,6 @@ void DMA1_Channel7_IRQHandler();
 void init_usart_dma_tx();
 void init_pll_usart();
 
-
+void set_interval();
 
 #endif /* USART_H_ */

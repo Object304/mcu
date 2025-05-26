@@ -49,6 +49,9 @@ int process_command() {
 	}
 	sync_byte_received = 0;
 	byte_counter = 0;
+
+	command_ready = 1;
+
 	return 0;
 }
 
@@ -72,7 +75,6 @@ void USART2_IRQHandler() {
 // USART transmit
 
 void prepare_usart_tx_buffer(uint16_t start, uint16_t length) {
-//	GPIOA->ODR |= GPIO_ODR_5;
 	for (uint16_t i = 0; i < length; ++i) {
 		uint16_t value = dma_data[start + i];
 		usart_tx_buffer[2*i]     = value & 0xFF;        // LSB (LSB first)
@@ -81,8 +83,6 @@ void prepare_usart_tx_buffer(uint16_t start, uint16_t length) {
 }
 
 void usart_dma_send(uint16_t length) {
-//	while(dma_tx_busy);
-//	dma_tx_busy = 1;
 	DMA1_Channel7->CCR &= ~DMA_CCR_EN; // остановка
 	DMA1_Channel7->CNDTR = length; // сколько байт передать
 	DMA1_Channel7->CCR |= DMA_CCR_EN;  // запуск
@@ -99,7 +99,6 @@ void data_convert() {
 void DMA1_Channel7_IRQHandler() {
 	if (DMA1->ISR & DMA_ISR_TCIF7) {
 		DMA1->IFCR |= DMA_IFCR_CTCIF7; // сброс флага
-//		dma_tx_busy = 0;
 	}
 }
 
@@ -123,15 +122,15 @@ void init_pll_usart() {
 	while((RCC->CR & RCC_CR_PLLRDY) == RCC_CR_PLLRDY && timeout--);
 	if (timeout == 0) NVIC_SystemReset();
 
-	RCC->CFGR |= RCC_CFGR_PLLSRC_HSI_DIV2;	// 8MHz / 2 = 4MHz
-	RCC->CFGR |= RCC_CFGR_PLLMUL8;	// 4Mhz * 8 = 32MHz
+	RCC->CFGR |= (1 << 15);	// 8MHz
+	RCC->CFGR |= RCC_CFGR_PLLMUL9;	// 8Mhz * 9 = 72MHz
 	RCC->CR |= RCC_CR_PLLON;
 
 	timeout = SystemCoreClock;
 	while((RCC->CR & RCC_CR_PLLRDY) != RCC_CR_PLLRDY && timeout--);
 	if (timeout == 0) NVIC_SystemReset();
 
-	RCC->CFGR2 |= RCC_CFGR2_ADCPRE12_DIV256; //clock for adc12 is on
+	RCC->CFGR2 |= RCC_CFGR2_ADCPRE12_DIV1; //clock for adc12 is on
 	RCC->CFGR |= RCC_CFGR_SW_PLL; // set pll as main clock
 
 	timeout = SystemCoreClock;
@@ -152,3 +151,8 @@ void init_pll_usart() {
 	USART2->CR3 |= USART_CR3_DMAT; // enable dma mode for transmission
 	USART2->CR1 |= USART_CR1_UE; // usart enable
 }
+
+void set_interval() {
+
+}
+
