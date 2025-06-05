@@ -16,14 +16,19 @@ reading = True
 running = True
 convert_to_temp = False
 big_data_mode = False
+sample_counter = 0
 
 viewer_proc = subprocess.Popen(
     ["python", "viewer.py"],
     creationflags=subprocess.CREATE_NEW_CONSOLE
 )
 
+def send_to_viewer_control(cmd):
+    with open("viewer_control.txt", "w") as f:
+        f.write(cmd)
+
 def read_from_serial():
-    global reading, convert_to_temp
+    global reading, convert_to_temp, sample_counter
     with open(output_file, "w"):
         pass
     with open(output_file, "a") as f:
@@ -36,57 +41,51 @@ def read_from_serial():
                         continue
                     b = byte[0]
 
-                    # Поиск начала пакета
                     if b != 0xAA:
                         continue
 
                     buffer = bytearray()
                     buffer.append(b)
 
-                    # Чтение 2 байт длины (uint16_t)
                     len_bytes = ser.read(2)
                     if len(len_bytes) < 2:
                         continue
                     buffer.extend(len_bytes)
                     num_values = int.from_bytes(len_bytes, byteorder='little')
 
-                    # Чтение данных (2 * N байт)
                     data_bytes = ser.read(2 * num_values)
                     if len(data_bytes) < 2 * num_values:
                         continue
                     buffer.extend(data_bytes)
 
-                    # Чтение XOR
                     xor_byte = ser.read(1)
                     if not xor_byte:
                         continue
                     buffer.append(xor_byte[0])
 
-                    # Проверка XOR
                     xor = 0
                     for b in buffer:
                         xor ^= b
                     if xor != 0:
-                        f.write("Данные повреждены.\n")
+                        f.write("Данные повреждены\n")
                         f.flush()
                         continue
 
-                    # Вывод данных
                     for i in range(num_values):
                         raw = int.from_bytes(data_bytes[i*2:i*2+2], byteorder='little')
                         if convert_to_temp:
                             voltage = (raw * 3.3) / 4095.0
                             temp = ((1.43 - voltage) * 1000.0 / 4.3) + 25.0
-                            f.write(f"{temp:.2f}\n")
+                            f.write(f"{sample_counter} {temp:.2f}\n")
                         else:
-                            f.write(f"{raw}\n")
+                            f.write(f"{sample_counter} {raw}\n")
+                        sample_counter += 1
                     f.flush()
-
+                    send_to_viewer_control("refresh")
                 except Exception as e:
                     f.write(f"Ошибка чтения: {e}\n")
                     f.flush()
                     continue
-
 
 def build_command(cmd_str, data_strs):
     try:
@@ -96,7 +95,6 @@ def build_command(cmd_str, data_strs):
         print("Ошибка: неверный формат байтов (ожидается формат '00')")
         return None, None
 
-    # Дополнение нулями до 5 байт
     while len(data) < 5:
         data.append(0x00)
     data = data[:5]
@@ -114,12 +112,8 @@ def build_command(cmd_str, data_strs):
 
     return bytes(packet), cmd
 
-def send_to_viewer_control(cmd):
-    with open("viewer_control.txt", "w") as f:
-        f.write(cmd)
-
 def main():
-    global running, reading, convert_to_temp, big_data_mode
+    global running, reading, convert_to_temp, big_data_mode, sample_counter
     threading.Thread(target=read_from_serial, daemon=True).start()
 
     print("Команды:")
@@ -147,6 +141,9 @@ def main():
             elif user_input.lower() == "clear":
                 with open(output_file, "w"):
                     pass
+                sample_counter = 0
+                send_to_viewer_control("clear")
+                send_to_viewer_control("refresh")
             elif user_input.lower() == "close":
                 running = False
                 ser.close()
@@ -163,7 +160,6 @@ def main():
                     continue
 
                 if big_data_mode:
-                    # Отправляем все байты как есть
                     try:
                         raw_bytes = bytes(int(t, 16) for t in tokens)
                         ser.write(raw_bytes)
