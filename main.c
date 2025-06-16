@@ -11,27 +11,60 @@
 //
 //ADC
 //
-//0x00 - start adc, data - set channels, speed, mode, amount of counts:
-//0	x	0				0		0								0				0 0 0 0
-//		0	0	0	0
-//		pc0	pc1	pc2	pc3	count	000 0: 1.5 ADC clock cycles		0 - circular	amount
-//		1 - on			1..4	001 1: 2.5 ADC clock cycles		1 - burst
-//		0 - off					010 2: 4.5 ADC clock cycles
-//								011 3: 7.5 ADC clock cycles
-//								100 4: 19.5 ADC clock cycles
-//								101 5: 61.5 ADC clock cycles
-//								110 6: 181.5 ADC clock cycles
-//								111 7: 601.5 ADC clock cycles
+//0x00 - adc off
+//0x01 - adc on
+//0	x	0 0				0 0 0 0
+//		0 - circular	amount
+//		1 - burst
 //
-//00 81 71 00 01 - burst 1 sample, 00 81 71 02 00 - 512, 00 81 71 01 00 - 256, 00 81 71 00 80 - 128
-//00 F4 71 00 01 - 4 channels 1 sample burst
-//00 81 70 00 01 - circular 1 sample, 00 F4 70 00 01 - circular 1 sample 4 channels
+//01 01 00 01 - burst 1 sample, 01 01 02 00 - 512, 01 01 01 00 - 256, 01 01 00 80 - 128
+//01 00 00 01 - circular 1 sample
+//
+//0x02 - set channels
+//0	x	0				0
+//		0	0	0	0
+//		pc0	pc1	pc2	pc3	count
+//		1 - on			1..4
+//		0 - off
+//02 81
+//
+//0x03 - set frequency
+//0	x	0 0 0 0 0 0 0 0
+//		frequency
+//03 00 00 00 01 - 1 Hz, 03 00 00 03 E8 - 1 kHz
+//
+//0x04 - set size
+//0	x	00 - 12 bit
+//		01 - 10 bit
+//		02 - 8 bit
+//		03 - 6 bit
+//04 00
+//
+//0x05 - set interval ms
+//0	x	00 - if available
+//		01	0 0 0 0 - set interval
+//			interval
+//05 00 - available, 05 01 03 E8 - 1 sec
+//
+//Big data
+//
+//0x06 - big data transmit started
+//0 x	00 00
+//		data size
+//
+//06 00 05
+//
+//0x07 - big data transmit ended
+//
+//Temp
+//
+//0x08 - send temp
 //
 //PWM
 //
-//0x01 - pwm on
-//0x02 - pwm off
-//0x03 - set frequency, data:
+//0x09 - pwm on
+//0x0A - pwm off
+//0x0B - set frequency, data:
 //0	x	0			0			0 0 0 0 0 0 0 0
 //		skip		1 - tim1	frequency
 //					2 - tim2
@@ -39,7 +72,7 @@
 //
 //03 01 00 00 20 00 - 8192		03 02 00 00 30 00 - 12288		03 03 00 00 40 00 - 16384 Hz
 //
-//0x04 - set duty %, data:
+//0x0C - set duty %, data:
 //0	x	0			0		0 0
 //		1 - tim1	1 - ch1	duty
 //		2 - tim2	2 - ch2
@@ -47,15 +80,6 @@
 //					4 - ch4
 //
 //04 11 50		04 23 50		04 31 50
-//
-//Temp
-//
-//0x05 - send temp
-//
-//Big data
-//
-//0x06 - big data transmit started
-//0x07 - big data transmit ended
 
 #include "stm32f3xx.h"
 #include "ADC.h"
@@ -104,22 +128,37 @@ void btn_process() {
 	uint16_t rx_data_tail_temp = command_data_buf.tail;
 	switch (cmd) {
 		case 0x00:
-			adc_start();
+			adc_off();
 			break;
 		case 0x01:
-			tim_on();
+			adc_on();
 			break;
 		case 0x02:
-			tim_off();
+			adc_set_channels();
 			break;
 		case 0x03:
-			set_pwm_freq_raw();
+			adc_set_freq();
 			break;
 		case 0x04:
-			set_pwm_duty();
+			adc_set_size();
 			break;
 		case 0x05:
+			set_interval();
+			break;
+		case 0x08:
 			adc_read_temp();
+			break;
+		case 0x09:
+			tim_on();
+			break;
+		case 0x0A:
+			tim_off();
+			break;
+		case 0x0B:
+			set_pwm_freq_raw();
+			break;
+		case 0x0C:
+			set_pwm_duty();
 			break;
 	}
 	command_data_buf.tail = rx_data_tail_temp;
@@ -133,16 +172,16 @@ int main(void)
 	init_button_pc13();
 	init_tim1_as_pwm();
 	init_tim2_as_pwm();
-	init_tim3_as_pwm();
 	init_buffer(&rx_buf);
 	init_buffer(&command_buf);
 	init_buffer(&command_data_buf);
 	init_adc_dma();
 	while(1) {
-		data_convert();
+		if (mode_type == 0) {
+			data_convert();
+		}
 		process_command();
 		btn_process();
-
 	}
 	return 0;
 }

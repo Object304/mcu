@@ -14,12 +14,14 @@
 #include "USART.h"
 
 void DMA1_Channel1_IRQHandler();
-void adc_set_pc_channels(uint8_t *pc_pins, uint8_t count);
-void adc_set_sampling_time(uint8_t smp_bits);
+void adc_off();
+void adc_on();
+void adc_set_channels();
+void adc_set_freq();
+void adc_set_size();
 void adc_start_burst(uint16_t n_total_samples);
 void adc_start_cycle(uint16_t n_per_cycle);
 void adc_read_temp();
-void adc_start();
 void init_adc_dma();
 
 #endif /* ADC_H_ */

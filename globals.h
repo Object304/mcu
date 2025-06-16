@@ -23,4 +23,6 @@ extern volatile RingBuffer command_buf;
 extern volatile RingBuffer command_data_buf;
 extern volatile uint8_t cmd;
 
+extern volatile uint8_t mode_type;
+
 #endif /* GLOBALS_H_ */

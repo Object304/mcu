@@ -16,6 +16,7 @@ reading = True
 running = True
 convert_to_temp = False
 big_data_mode = False
+raw_mode = False
 sample_counter = 0
 
 viewer_proc = subprocess.Popen(
@@ -28,14 +29,30 @@ def send_to_viewer_control(cmd):
         f.write(cmd)
 
 def read_from_serial():
-    global reading, convert_to_temp, sample_counter
+    global reading, convert_to_temp, sample_counter, raw_mode
     with open(output_file, "w"):
         pass
     with open(output_file, "a") as f:
         buffer = bytearray()
         while running:
-            if reading:
-                try:
+            if not reading:
+                continue
+            try:
+                if raw_mode:
+                    raw = ser.read(2)
+                    if len(raw) < 2:
+                        continue
+                    value = int.from_bytes(raw, byteorder='little')
+                    if convert_to_temp:
+                        voltage = (value * 3.3) / 4095.0
+                        temp = ((1.43 - voltage) * 1000.0 / 4.3) + 25.0
+                        f.write(f"{sample_counter} {temp:.2f}\n")
+                    else:
+                        f.write(f"{sample_counter} {value}\n")
+                    sample_counter += 1
+                    f.flush()
+                    send_to_viewer_control("refresh")
+                else:
                     byte = ser.read(1)
                     if not byte:
                         continue
@@ -82,10 +99,10 @@ def read_from_serial():
                         sample_counter += 1
                     f.flush()
                     send_to_viewer_control("refresh")
-                except Exception as e:
-                    f.write(f"Ошибка чтения: {e}\n")
-                    f.flush()
-                    continue
+            except Exception as e:
+                f.write(f"Ошибка чтения: {e}\n")
+                f.flush()
+                continue
 
 def build_command(cmd_str, data_strs):
     try:
@@ -113,7 +130,7 @@ def build_command(cmd_str, data_strs):
     return bytes(packet), cmd
 
 def main():
-    global running, reading, convert_to_temp, big_data_mode, sample_counter
+    global running, reading, convert_to_temp, big_data_mode, raw_mode, sample_counter
     threading.Thread(target=read_from_serial, daemon=True).start()
 
     print("Команды:")
@@ -126,6 +143,8 @@ def main():
     print("  refresh_en       — включить автообновление viewer")
     print("  refresh_dis      — отключить автообновление viewer")
     print("  big_data_dis     — отключить режим передачи большого объёма данных")
+    print("  raw_en           — включить приём данных в raw-режиме")
+    print("  raw_dis          — отключить raw-режим")
 
     while True:
         try:
@@ -154,6 +173,12 @@ def main():
             elif user_input.lower() == "big_data_dis":
                 big_data_mode = False
                 print("Режим передачи большого объёма данных отключён.")
+            elif user_input.lower() == "raw_en":
+                raw_mode = True
+                print("RAW-режим включён.")
+            elif user_input.lower() == "raw_dis":
+                raw_mode = False
+                print("RAW-режим отключён.")
             else:
                 tokens = user_input.split()
                 if not tokens:

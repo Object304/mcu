@@ -75,36 +75,6 @@ void init_tim2_as_pwm() { // pb10 pb11
 	TIM2->CR1 |= TIM_CR1_CEN;
 }
 
-void init_tim3_as_pwm() { // PA6 (CH1), PA7 (CH2)
-	RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
-	GPIOA->MODER |= GPIO_MODER_MODER6_1 | GPIO_MODER_MODER7_1;
-	GPIOA->AFR[0] |= SET_AF(6, 0x2) | SET_AF(7, 0x2);
-
-	RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
-
-	TIM3->PSC = 31;
-	TIM3->ARR = 999;
-
-	// Настройка CH1
-	TIM3->CCMR1 &= ~TIM_CCMR1_CC1S;
-	TIM3->CCMR1 |= TIM_CCMR1_OC1M_1 | TIM_CCMR1_OC1M_2;
-	TIM3->CCMR1 |= TIM_CCMR1_OC1PE;
-
-	// Настройка CH2
-	TIM3->CCMR1 &= ~TIM_CCMR1_CC2S;
-	TIM3->CCMR1 |= TIM_CCMR1_OC2M_1 | TIM_CCMR1_OC2M_2;
-	TIM3->CCMR1 |= TIM_CCMR1_OC2PE;
-
-	TIM3->CCER |= TIM_CCER_CC1E | TIM_CCER_CC2E;
-
-	TIM3->CCR1 = 500;
-	TIM3->CCR2 = 200;
-
-	TIM3->CR1 |= TIM_CR1_ARPE;
-	TIM3->EGR |= TIM_EGR_UG;
-	TIM3->CR1 |= TIM_CR1_CEN;
-}
-
 void set_pwm_freq(uint8_t timer_number, uint32_t freq_hz) {
 	if (freq_hz == 0 || freq_hz > SystemCoreClock) return;  // Защита от недопустимых значений
 	TIM_TypeDef* tim;
