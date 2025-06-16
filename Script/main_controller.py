@@ -199,7 +199,7 @@ def main():
                         if cmd_val == 0x06:
                             big_data_mode = True
                             print("Передача большого объёма данных началась.")
-                        convert_to_temp = (cmd_val == 0x05)
+                        convert_to_temp = (cmd_val == 0x08)
                         ser.write(packet)
                         print(f"Отправлено: {[hex(b) for b in packet]}")
         except Exception as e:
