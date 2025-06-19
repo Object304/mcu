@@ -20,3 +20,5 @@ volatile uint8_t cmd = 0xFF;
 volatile uint8_t command_ready = 0;
 
 volatile uint8_t mode_type = 0;
+
+volatile uint8_t adc_size = 0;

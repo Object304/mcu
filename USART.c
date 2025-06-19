@@ -73,19 +73,35 @@ void USART2_IRQHandler() {
 
 // USART transmit
 
-void prepare_usart_tx_buffer(uint16_t start, uint16_t length) {
-	uint8_t xor = 0xAA ^ ((length >> 8) & 0xFF) ^ (length & 0xFF);
-	for (uint16_t i = 2; i < length + 2; ++i) {
-		uint16_t value = dma_data[start + i - 2];
-		usart_tx_buffer[2*i - 1]     = value & 0xFF; // LSB (LSB first)
-		usart_tx_buffer[2*i] = (value >> 8) & 0xFF; // MSB
+uint16_t prepare_usart_tx_buffer(uint16_t length) {
+	uint8_t bit_width;
+	if (adc_size == 00) bit_width = 12;
+	if (adc_size == 01) bit_width = 10;
+	if (adc_size == 02) bit_width = 8;
+	if (adc_size == 03) bit_width = 6;
 
-		xor ^= (value & 0xFF) ^ ((value >> 8) & 0xFF);
+	uint32_t bit_buf = 0;   // буфер битов
+	uint8_t bit_pos = 0;    // сколько битов уже в буфере
+	uint16_t out_idx = 0;
+
+	for (uint16_t i = 0; i < length; i++) {
+		uint16_t val = dma_data[i] & ((1 << bit_width) - 1);  // обрезаем по нужной разрядности
+		bit_buf |= ((uint32_t)val << bit_pos);
+		bit_pos += bit_width;
+
+		while (bit_pos >= 8) {
+			usart_tx_buffer[out_idx++] = bit_buf & 0xFF;
+			bit_buf >>= 8;
+			bit_pos -= 8;
+		}
 	}
-	usart_tx_buffer[0] = 0xAA;
-	usart_tx_buffer[1] = (length & 0xFF); // LSB first
-	usart_tx_buffer[2] = ((length >> 8) & 0xFF);
-	usart_tx_buffer[length * 2 + 3] = xor;
+
+	// записываем остаток (если остались непросмотренные биты)
+	if (bit_pos > 0) {
+		usart_tx_buffer[out_idx++] = bit_buf & 0xFF;
+	}
+
+	return out_idx;
 }
 
 void usart_dma_send(uint16_t length) {
@@ -94,10 +110,50 @@ void usart_dma_send(uint16_t length) {
 	DMA1_Channel7->CCR |= DMA_CCR_EN;  // запуск
 }
 
+void send_notification(uint8_t type) {
+	if (type == 0) {
+		uint8_t xor = 0xAA;
+		usart_tx_buffer[0] = 0xAA;
+		usart_tx_buffer[1] = type;
+		usart_tx_buffer[2] = 0x00;
+		usart_tx_buffer[3] = 0x00;
+		usart_tx_buffer[4] = samples_count & 0xFF; // lsb first
+		usart_tx_buffer[5] = (samples_count >> 8) & 0xFF;
+		usart_tx_buffer[6] = adc_size;
+		usart_tx_buffer[7] = 0x00;
+		usart_tx_buffer[8] = 0x00;
+		for (uint8_t i = 1; i < 9; i++) {
+			xor ^= usart_tx_buffer[i];
+		}
+		usart_tx_buffer[9] = xor;
+	}
+	if (type == 1) {
+		uint8_t xor = 0xAA;
+		usart_tx_buffer[0] = 0xAA;
+		usart_tx_buffer[1] = type;
+		usart_tx_buffer[2] = 0x00;
+		usart_tx_buffer[3] = 0x00;
+		usart_tx_buffer[4] = 0x00;
+		usart_tx_buffer[5] = 0x00;
+		usart_tx_buffer[6] = 0x00;
+		usart_tx_buffer[7] = 0x00;
+		usart_tx_buffer[8] = 0x00;
+		for (uint8_t i = 1; i < 9; i++) {
+			xor ^= usart_tx_buffer[i];
+		}
+		usart_tx_buffer[9] = xor;
+	}
+}
+
 void data_convert() {
 	if (data_ready == 1) {
-		prepare_usart_tx_buffer(0, samples_count);
-		usart_dma_send(samples_count * 2 + 4);
+		send_notification(0);
+		usart_dma_send(10);
+
+		usart_dma_send(prepare_usart_tx_buffer(samples_count));
+
+		send_notification(1);
+		usart_dma_send(10);
 		data_ready = 0;
 	}
 }
@@ -151,7 +207,7 @@ void init_pll_usart() {
 	GPIOA->MODER |= GPIO_MODER_MODER2_1 | GPIO_MODER_MODER3_1;
 	GPIOA->AFR[0] |= (7 << 8) | (7 << 12); // выбрали альтернативную функцию 7 для портов 2 и 3
 	RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
-	USART2->BRR = SystemCoreClock / 921600;
+	USART2->BRR = SystemCoreClock / 256000;
 	USART2->CR1 |= USART_CR1_TE | USART_CR1_RE; // transmitter, receiver enable
 	USART2->CR1 |= USART_CR1_RXNEIE; // interrupt enable
 	NVIC_EnableIRQ(USART2_IRQn);

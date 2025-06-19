@@ -1,11 +1,10 @@
 import serial
 import threading
-import subprocess
 import datetime
 
 ser = serial.Serial(
     port='COM3',
-    baudrate=921600,
+    baudrate=256000,
     bytesize=serial.EIGHTBITS,
     parity=serial.PARITY_NONE,
     stopbits=serial.STOPBITS_ONE
@@ -14,79 +13,108 @@ ser = serial.Serial(
 output_file = "adc_output.txt"
 reading = True
 running = True
-convert_to_temp = False
-big_data_mode = False
 
-viewer_proc = subprocess.Popen(
-    ["python", "viewer.py"],
-    creationflags=subprocess.CREATE_NEW_CONSOLE
-)
+expected_samples = 0
+bit_width = 12
+sample_counter = 0
+receiving_data = False
+data_buffer = bytearray()
+
+def parse_samples(buffer, bits_per_sample, expected_count):
+    samples = []
+    i = 0
+    total_bits = len(buffer) * 8
+    needed_bits = expected_count * bits_per_sample
+    if needed_bits > total_bits:
+        print("Ошибка: недостаточно данных для парсинга")
+        return None
+
+    bitstream = int.from_bytes(buffer, 'little')
+    mask = (1 << bits_per_sample) - 1
+
+    for n in range(expected_count):
+        value = (bitstream >> (n * bits_per_sample)) & mask
+        samples.append(value)
+
+    return samples
 
 def read_from_serial():
-    global reading, convert_to_temp
+    global reading, running, expected_samples, bit_width, sample_counter, receiving_data, data_buffer
     with open(output_file, "w"):
         pass
     with open(output_file, "a") as f:
-        buffer = bytearray()
         while running:
-            if reading:
-                try:
-                    byte = ser.read(1)
-                    if not byte:
-                        continue
-                    b = byte[0]
-
-                    # Поиск начала пакета
-                    if b != 0xAA:
-                        continue
-
-                    buffer = bytearray()
-                    buffer.append(b)
-
-                    # Чтение 2 байт длины (uint16_t)
-                    len_bytes = ser.read(2)
-                    if len(len_bytes) < 2:
-                        continue
-                    buffer.extend(len_bytes)
-                    num_values = int.from_bytes(len_bytes, byteorder='little')
-
-                    # Чтение данных (2 * N байт)
-                    data_bytes = ser.read(2 * num_values)
-                    if len(data_bytes) < 2 * num_values:
-                        continue
-                    buffer.extend(data_bytes)
-
-                    # Чтение XOR
-                    xor_byte = ser.read(1)
-                    if not xor_byte:
-                        continue
-                    buffer.append(xor_byte[0])
-
-                    # Проверка XOR
-                    xor = 0
-                    for b in buffer:
-                        xor ^= b
-                    if xor != 0:
-                        f.write("Данные повреждены.\n")
-                        f.flush()
-                        continue
-
-                    # Вывод данных
-                    for i in range(num_values):
-                        raw = int.from_bytes(data_bytes[i*2:i*2+2], byteorder='little')
-                        if convert_to_temp:
-                            voltage = (raw * 3.3) / 4095.0
-                            temp = ((1.43 - voltage) * 1000.0 / 4.3) + 25.0
-                            f.write(f"{temp:.2f}\n")
-                        else:
-                            f.write(f"{raw}\n")
-                    f.flush()
-
-                except Exception as e:
-                    f.write(f"Ошибка чтения: {e}\n")
-                    f.flush()
+            if not reading:
+                continue
+            try:
+                header = ser.read(10)
+                if len(header) < 10:
+                    print("Команда неполная")
                     continue
 
+                # Всегда выводим команду
+                print("Получено:", ' '.join(f'{b:02X}' for b in header))
+
+                xor_check = header[-1]
+                calc_xor = 0
+                for b in header[:9]:  # Включая 0xAA
+                    calc_xor ^= b
+
+                if xor_check != calc_xor:
+                    if header[1] == 0x00:
+                        print("Команда о начале передачи не принята (ошибка XOR)")
+                    elif header[1] == 0x01:
+                        print("Команда о конце передачи не принята (ошибка XOR)")
+                    else:
+                        print("Команда повреждена (ошибка XOR)")
+                    continue
+
+                if header[0] != 0xAA:
+                    print("Некорректная команда: нет sync-бита")
+                    continue
+
+                cmd = header[1]
+
+                if cmd == 0x00:
+                    # Команда начала передачи
+                    expected_samples = header[4] | (header[5] << 8)
+                    bit_width = {
+                        0x00: 12,
+                        0x01: 10,
+                        0x02: 8,
+                        0x03: 6
+                    }.get(header[6], 12)
+
+                    sample_counter = 0
+                    data_buffer = bytearray()
+                    receiving_data = True
+                    print(f"Начало передачи: {expected_samples} отсчётов, {bit_width} бит")
+
+                elif cmd == 0x01:
+                    # Команда конца передачи
+                    if not receiving_data:
+                        print("Команда о конце передачи получена без начала")
+                        continue
+
+                    print("Конец передачи")
+                    samples = parse_samples(data_buffer, bit_width, expected_samples)
+                    if samples is None or len(samples) != expected_samples:
+                        print("Ошибка чтения данных")
+                        continue
+
+                    for i, val in enumerate(samples):
+                        f.write(f"{i} {val}\n")
+                    f.flush()
+
+                    receiving_data = False
+                    print(f"Успешно записано {len(samples)} отсчётов в файл")
+
+                elif receiving_data:
+                    data_buffer.extend(header)
+
+            except Exception as e:
+                print(f"Ошибка: {e}")
+                continue
 
 def build_command(cmd_str, data_strs):
     try:
@@ -96,7 +124,6 @@ def build_command(cmd_str, data_strs):
         print("Ошибка: неверный формат байтов (ожидается формат '00')")
         return None, None
 
-    # Дополнение нулями до 5 байт
     while len(data) < 5:
         data.append(0x00)
     data = data[:5]
@@ -114,29 +141,20 @@ def build_command(cmd_str, data_strs):
 
     return bytes(packet), cmd
 
-def send_to_viewer_control(cmd):
-    with open("viewer_control.txt", "w") as f:
-        f.write(cmd)
-
 def main():
-    global running, reading, convert_to_temp, big_data_mode
+    global running, reading
     threading.Thread(target=read_from_serial, daemon=True).start()
 
     print("Команды:")
-    print("  <cmd> <data...>  — отправить hex-команду (например: 12 A1 00)")
+    print("  <cmd> <data...>  — отправить hex-команду (например: 01 05 AA)")
     print("  stop             — остановить приём данных")
     print("  continue         — продолжить приём данных")
     print("  clear            — очистить файл adc_output.txt")
-    print("  close            — закрыть оба окна")
-    print("  refresh          — обновить viewer вручную")
-    print("  refresh_en       — включить автообновление viewer")
-    print("  refresh_dis      — отключить автообновление viewer")
-    print("  big_data_dis     — отключить режим передачи большого объёма данных")
+    print("  close            — завершить работу")
 
     while True:
         try:
             user_input = input("> ").strip()
-
             if not user_input:
                 continue
 
@@ -147,40 +165,19 @@ def main():
             elif user_input.lower() == "clear":
                 with open(output_file, "w"):
                     pass
+                print("Файл очищен.")
             elif user_input.lower() == "close":
                 running = False
                 ser.close()
-                viewer_proc.terminate()
                 break
-            elif user_input.lower() in ("refresh", "refresh_en", "refresh_dis"):
-                send_to_viewer_control(user_input.lower())
-            elif user_input.lower() == "big_data_dis":
-                big_data_mode = False
-                print("Режим передачи большого объёма данных отключён.")
             else:
                 tokens = user_input.split()
-                if not tokens:
-                    continue
-
-                if big_data_mode:
-                    # Отправляем все байты как есть
-                    try:
-                        raw_bytes = bytes(int(t, 16) for t in tokens)
-                        ser.write(raw_bytes)
-                        print(f"Отправлено: {[hex(b) for b in raw_bytes]}")
-                    except ValueError:
-                        print("Ошибка: в big_data_mode можно вводить только байты в формате hex")
-                else:
-                    cmd_str = tokens[0]
-                    data = tokens[1:] if len(tokens) > 1 else []
-                    packet, cmd_val = build_command(cmd_str, data)
-                    if packet:
-                        if cmd_val == 0x06:
-                            big_data_mode = True
-                            print("Передача большого объёма данных началась.")
-                        convert_to_temp = (cmd_val == 0x05)
-                        ser.write(packet)
-                        print(f"Отправлено: {[hex(b) for b in packet]}")
+                cmd_str = tokens[0]
+                data = tokens[1:] if len(tokens) > 1 else []
+                packet, cmd_val = build_command(cmd_str, data)
+                if packet:
+                    ser.write(packet)
+                    print(f"Отправлено: {[hex(b) for b in packet]}")
         except Exception as e:
             print(f"Ошибка: {e}")
             break

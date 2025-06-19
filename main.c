@@ -9,7 +9,8 @@
 //9 - data5
 //10 - xor
 //
-//Output pack: 1 - sync (0xAA); 2, 3 - data length; 4 - data; 5 - xor
+//Output pack: 1 - sync (0xAA); 2 - cmd (0 start, 1 finish);
+//3, 4 - 0x0000; 5, 6 - data; 7 - size; 8, 9 - 0x0000; 10 - xor
 //
 //ADC
 //
@@ -50,7 +51,7 @@
 //03 00 00 00 01
 //04 00
 //05 00
-//08 00 01
+//08 00 03
 //01
 
 #include "stm32f3xx.h"

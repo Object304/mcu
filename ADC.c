@@ -112,6 +112,8 @@ void adc_set_size() {
 	byte &= 0b11;
 	ADC1->CFGR &= ~ADC_CFGR_RES;
 	ADC1->CFGR |= (byte << 3);
+
+	adc_size = byte;
 }
 
 void set_block_size() {
